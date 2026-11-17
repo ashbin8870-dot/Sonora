@@ -30,6 +30,7 @@ data class TrackEntity(
     val localFilePath: String? = null,
     val artworkResKey: String? = null,
     val artworkFilePath: String? = null,
+    val artworkUrl: String? = null,
     val isLiveStream: Boolean = false,
     val isFavorite: Boolean = false,
     val downloadStatus: DownloadStatus = DownloadStatus.NONE,

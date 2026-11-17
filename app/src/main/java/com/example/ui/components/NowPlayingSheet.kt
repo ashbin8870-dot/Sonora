@@ -226,6 +226,7 @@ fun NowPlayingSheet(
                 ArtworkImage(
                     artworkResKey = track.artworkResKey,
                     artworkFilePath = track.artworkFilePath,
+                    artworkUrl = track.artworkUrl,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(6.dp)

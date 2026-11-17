@@ -44,6 +44,7 @@ fun artworkDrawableForKey(key: String?): Int = when (key) {
 fun ArtworkImage(
     artworkResKey: String?,
     artworkFilePath: String? = null,
+    artworkUrl: String? = null,
     contentDescription: String? = stringResource(R.string.cd_album_art),
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(12.dp),
@@ -56,20 +57,33 @@ fun ArtworkImage(
         contentAlignment = Alignment.Center
     ) {
         val fileExists = !artworkFilePath.isNullOrBlank() && File(artworkFilePath).exists()
-        if (fileExists) {
-            AsyncImage(
-                model = File(artworkFilePath!!),
-                contentDescription = contentDescription,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Image(
-                painter = painterResource(id = artworkDrawableForKey(artworkResKey)),
-                contentDescription = contentDescription,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
+        when {
+            fileExists -> {
+                AsyncImage(
+                    model = File(artworkFilePath!!),
+                    contentDescription = contentDescription,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            !artworkUrl.isNullOrBlank() -> {
+                AsyncImage(
+                    model = artworkUrl,
+                    contentDescription = contentDescription,
+                    contentScale = ContentScale.Crop,
+                    placeholder = painterResource(id = artworkDrawableForKey(artworkResKey)),
+                    error = painterResource(id = artworkDrawableForKey(artworkResKey)),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            else -> {
+                Image(
+                    painter = painterResource(id = artworkDrawableForKey(artworkResKey)),
+                    contentDescription = contentDescription,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         if (isPlaying) {

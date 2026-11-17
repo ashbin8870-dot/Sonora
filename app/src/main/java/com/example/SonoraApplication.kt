@@ -3,6 +3,8 @@ package com.example
 import android.app.Application
 import com.example.data.local.AppDatabase
 import com.example.data.local.PreferencesRepository
+import com.example.data.remote.SpotifyClient
+import com.example.data.remote.YouTubeMusicClient
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.NetworkMonitor
 import com.example.player.PlayerManager
@@ -18,6 +20,8 @@ class SonoraApplication : Application() {
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
     val preferencesRepository: PreferencesRepository by lazy { PreferencesRepository(this) }
     val networkMonitor: NetworkMonitor by lazy { NetworkMonitor(this) }
+    val spotifyClient: SpotifyClient by lazy { SpotifyClient(preferencesRepository) }
+    val youTubeMusicClient: YouTubeMusicClient by lazy { YouTubeMusicClient() }
     val musicRepository: MusicRepository by lazy {
         MusicRepository(
             context = this,

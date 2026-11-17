@@ -96,6 +96,7 @@ fun TrackRow(
         ArtworkImage(
             artworkResKey = track.artworkResKey,
             artworkFilePath = track.artworkFilePath,
+            artworkUrl = track.artworkUrl,
             isPlaying = isCurrentTrack && isPlaying,
             modifier = Modifier.size(54.dp),
             shape = RoundedCornerShape(12.dp)

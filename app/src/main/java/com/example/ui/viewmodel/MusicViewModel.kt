@@ -1,6 +1,8 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,6 +10,11 @@ import com.example.SonoraApplication
 import com.example.data.local.UserPreferences
 import com.example.data.model.PlaylistWithTracks
 import com.example.data.model.TrackEntity
+import com.example.data.remote.SpotifyConnectState
+import com.example.data.remote.SpotifyPlaylist
+import com.example.data.remote.SpotifyTrack
+import com.example.data.remote.SpotifyUserProfile
+import com.example.data.remote.YouTubeMusicTrack
 import com.example.player.PlayerUiState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -20,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 enum class LibraryTab(val label: String) {
@@ -38,6 +46,32 @@ enum class SearchFilter(val label: String) {
     ACOUSTIC("Acoustic"),
     AMBIENT("Ambient"),
 }
+
+enum class StreamingServiceTab(val label: String) {
+    SPOTIFY("Spotify"),
+    YOUTUBE_MUSIC("YouTube Music")
+}
+
+data class ServicesUiState(
+    val selectedService: StreamingServiceTab = StreamingServiceTab.SPOTIFY,
+    // Spotify
+    val spotifyConfigured: Boolean = false,
+    val spotifySignedIn: Boolean = false,
+    val spotifyLoading: Boolean = false,
+    val spotifyProfile: SpotifyUserProfile? = null,
+    val spotifyPlaylists: List<SpotifyPlaylist> = emptyList(),
+    val spotifySelectedPlaylistName: String? = null,
+    val spotifyTracks: List<SpotifyTrack> = emptyList(),
+    val spotifySearchQuery: String = "",
+    val spotifyConnectState: SpotifyConnectState? = null,
+    // YouTube Music
+    val youtubeConfigured: Boolean = false,
+    val youtubeLoading: Boolean = false,
+    val youtubeSearchQuery: String = "",
+    val youtubeDirectUrl: String = "",
+    val youtubeTracks: List<YouTubeMusicTrack> = emptyList(),
+    val activeYouTubeTrack: YouTubeMusicTrack? = null,
+)
 
 data class MusicHomeUiState(
     val allTracks: List<TrackEntity> = emptyList(),
@@ -92,10 +126,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val preferencesRepo = app.preferencesRepository
     private val networkMonitor = app.networkMonitor
     private val playerManager = app.playerManager
+    private val spotifyClient = app.spotifyClient
+    private val youTubeClient = app.youTubeMusicClient
 
     private val selectedLibraryTab = MutableStateFlow(LibraryTab.OFFLINE)
     private val searchQuery = MutableStateFlow("")
     private val selectedSearchFilter = MutableStateFlow(SearchFilter.ALL)
+
+    private val _servicesState = MutableStateFlow(
+        ServicesUiState(
+            spotifyConfigured = spotifyClient.isConfigured,
+            youtubeConfigured = youTubeClient.isConfigured
+        )
+    )
+    val servicesState: StateFlow<ServicesUiState> = _servicesState.asStateFlow()
 
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarEvents: SharedFlow<String> = _snackbarEvents.asSharedFlow()
@@ -158,9 +202,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val prefs = preferencesRepo.preferences.first()
             playerManager.setPlaybackSpeed(prefs.playbackSpeed)
-            playerManager.connect()
+            val hasSpotifySession = !prefs.spotifyRefreshToken.isNullOrBlank() ||
+                !prefs.spotifyAccessToken.isNullOrBlank()
+            if (hasSpotifySession && spotifyClient.isConfigured) {
+                _servicesState.update { it.copy(spotifySignedIn = true) }
+                refreshSpotifyData()
+            }
         }
     }
+
+    fun connectMediaController() = playerManager.connect()
+
+    fun disconnectMediaController() = playerManager.disconnect()
 
     fun observePlaylist(playlistId: Long): Flow<PlaylistWithTracks?> =
         repository.observePlaylist(playlistId)
@@ -176,6 +229,259 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun selectSearchFilter(filter: SearchFilter) {
         selectedSearchFilter.value = filter
     }
+
+    // --- Streaming Services (Spotify & YouTube Music) ---
+
+    fun selectStreamingService(tab: StreamingServiceTab) {
+        _servicesState.update { it.copy(selectedService = tab) }
+    }
+
+    fun startSpotifySignIn(context: Context) {
+        if (!spotifyClient.isConfigured) {
+            _snackbarEvents.tryEmit("Add SPOTIFY_CLIENT_ID in the AI Studio Secrets panel first.")
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                val intent: Intent = spotifyClient.createAuthorizationIntent()
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            }.onFailure {
+                _snackbarEvents.tryEmit("Could not open browser for Spotify sign-in.")
+            }
+        }
+    }
+
+    fun handleSpotifyAuthCallback(uri: Uri) {
+        if (uri.scheme != "sonora" || uri.host != "spotify-callback") return
+        viewModelScope.launch {
+            _servicesState.update { it.copy(spotifyLoading = true) }
+            spotifyClient.handleAuthCallback(uri)
+                .onSuccess {
+                    _servicesState.update { it.copy(spotifySignedIn = true) }
+                    _snackbarEvents.tryEmit("Connected to Spotify")
+                    refreshSpotifyData()
+                }
+                .onFailure { err ->
+                    _servicesState.update { it.copy(spotifyLoading = false) }
+                    _snackbarEvents.tryEmit(err.message ?: "Spotify sign-in failed")
+                }
+        }
+    }
+
+    fun refreshSpotifyData() {
+        if (!spotifyClient.isConfigured) return
+        viewModelScope.launch {
+            _servicesState.update { it.copy(spotifyLoading = true) }
+            val profileRes = spotifyClient.fetchCurrentUser()
+            val playlistsRes = spotifyClient.fetchUserPlaylists()
+            val savedRes = spotifyClient.fetchSavedTracks()
+            val connectRes = spotifyClient.fetchPlaybackState()
+
+            profileRes.onFailure { err ->
+                _snackbarEvents.tryEmit(err.message ?: "Failed to load Spotify profile")
+            }
+
+            _servicesState.update {
+                it.copy(
+                    spotifyLoading = false,
+                    spotifySignedIn = profileRes.isSuccess,
+                    spotifyProfile = profileRes.getOrNull(),
+                    spotifyPlaylists = playlistsRes.getOrDefault(emptyList()),
+                    spotifySelectedPlaylistName = "Your Liked Songs",
+                    spotifyTracks = savedRes.getOrDefault(emptyList()),
+                    spotifyConnectState = connectRes.getOrNull(),
+                )
+            }
+        }
+    }
+
+    fun selectSpotifyPlaylist(playlist: SpotifyPlaylist) {
+        viewModelScope.launch {
+            _servicesState.update {
+                it.copy(
+                    spotifyLoading = true,
+                    spotifySelectedPlaylistName = playlist.name
+                )
+            }
+            spotifyClient.fetchPlaylistTracks(playlist.id)
+                .onSuccess { tracks ->
+                    _servicesState.update {
+                        it.copy(spotifyLoading = false, spotifyTracks = tracks)
+                    }
+                }
+                .onFailure { err ->
+                    _servicesState.update { it.copy(spotifyLoading = false) }
+                    _snackbarEvents.tryEmit(err.message ?: "Failed to load playlist tracks")
+                }
+        }
+    }
+
+    fun updateSpotifySearchQuery(query: String) {
+        _servicesState.update { it.copy(spotifySearchQuery = query) }
+    }
+
+    fun searchSpotifyTracks() {
+        val query = _servicesState.value.spotifySearchQuery.trim()
+        if (query.isBlank()) return
+        viewModelScope.launch {
+            _servicesState.update {
+                it.copy(
+                    spotifyLoading = true,
+                    spotifySelectedPlaylistName = "Search: $query"
+                )
+            }
+            spotifyClient.searchTracks(query)
+                .onSuccess { tracks ->
+                    _servicesState.update {
+                        it.copy(spotifyLoading = false, spotifyTracks = tracks)
+                    }
+                }
+                .onFailure { err ->
+                    _servicesState.update { it.copy(spotifyLoading = false) }
+                    _snackbarEvents.tryEmit(err.message ?: "Spotify search failed")
+                }
+        }
+    }
+
+    fun playSpotifyPreview(track: SpotifyTrack) {
+        if (uiState.value.isEffectivelyOffline) {
+            _snackbarEvents.tryEmit("Turn off Offline Mode to stream Spotify previews.")
+            return
+        }
+        val entity = track.toPreviewTrackEntity()
+        if (entity == null) {
+            _snackbarEvents.tryEmit("No 30s preview available for this track. Use Spotify Connect or Open in Spotify.")
+            return
+        }
+        val queue = _servicesState.value.spotifyTracks.mapNotNull { it.toPreviewTrackEntity() }
+            .ifEmpty { listOf(entity) }
+        playerManager.playTrack(entity, queue)
+    }
+
+    fun playOnSpotifyConnect(track: SpotifyTrack) {
+        viewModelScope.launch {
+            spotifyClient.playOnSpotifyConnect(track.spotifyUri)
+                .onSuccess {
+                    _snackbarEvents.tryEmit("Playing \"${track.title}\" on Spotify Connect")
+                    refreshSpotifyConnectState()
+                }
+                .onFailure { err ->
+                    _snackbarEvents.tryEmit(err.message ?: "Spotify Connect failed")
+                }
+        }
+    }
+
+    fun toggleSpotifyConnectPlayPause() {
+        val current = _servicesState.value.spotifyConnectState ?: return
+        viewModelScope.launch {
+            val res = if (current.isPlaying) spotifyClient.pauseSpotifyConnect()
+            else spotifyClient.resumeSpotifyConnect()
+            res.onSuccess { refreshSpotifyConnectState() }
+                .onFailure { _snackbarEvents.tryEmit(it.message ?: "Command failed") }
+        }
+    }
+
+    fun nextOnSpotifyConnect() {
+        viewModelScope.launch {
+            spotifyClient.skipNextSpotifyConnect()
+                .onSuccess { refreshSpotifyConnectState() }
+                .onFailure { _snackbarEvents.tryEmit(it.message ?: "Command failed") }
+        }
+    }
+
+    private fun refreshSpotifyConnectState() {
+        viewModelScope.launch {
+            spotifyClient.fetchPlaybackState().onSuccess { state ->
+                _servicesState.update { it.copy(spotifyConnectState = state) }
+            }
+        }
+    }
+
+    fun openInSpotifyApp(context: Context, track: SpotifyTrack) {
+        spotifyClient.openInSpotifyApp(context, track.spotifyUri, track.externalUrl)
+    }
+
+    fun disconnectSpotify() {
+        viewModelScope.launch {
+            spotifyClient.disconnect()
+            _servicesState.update {
+                it.copy(
+                    spotifySignedIn = false,
+                    spotifyProfile = null,
+                    spotifyPlaylists = emptyList(),
+                    spotifyTracks = emptyList(),
+                    spotifyConnectState = null,
+                    spotifySelectedPlaylistName = null
+                )
+            }
+            _snackbarEvents.tryEmit("Disconnected from Spotify")
+        }
+    }
+
+    fun updateYouTubeSearchQuery(query: String) {
+        _servicesState.update { it.copy(youtubeSearchQuery = query) }
+    }
+
+    fun updateYouTubeDirectUrl(url: String) {
+        _servicesState.update { it.copy(youtubeDirectUrl = url) }
+    }
+
+    fun searchYouTubeMusic(overrideQuery: String? = null) {
+        val query = (overrideQuery ?: _servicesState.value.youtubeSearchQuery).trim()
+        if (query.isBlank()) return
+        if (overrideQuery != null) {
+            _servicesState.update { it.copy(youtubeSearchQuery = overrideQuery) }
+        }
+        if (uiState.value.isEffectivelyOffline) {
+            _snackbarEvents.tryEmit("Turn off Offline Mode to search YouTube Music.")
+            return
+        }
+        viewModelScope.launch {
+            _servicesState.update { it.copy(youtubeLoading = true) }
+            youTubeClient.searchMusic(query)
+                .onSuccess { results ->
+                    _servicesState.update {
+                        it.copy(youtubeLoading = false, youtubeTracks = results)
+                    }
+                }
+                .onFailure { err ->
+                    _servicesState.update { it.copy(youtubeLoading = false) }
+                    _snackbarEvents.tryEmit(err.message ?: "YouTube Music search failed")
+                }
+        }
+    }
+
+    fun playYouTubeDirectUrl() {
+        val parsed = youTubeClient.parseYouTubeUrl(_servicesState.value.youtubeDirectUrl)
+        if (parsed == null) {
+            _snackbarEvents.tryEmit("Enter a valid YouTube or YouTube Music URL.")
+            return
+        }
+        playYouTubeMusicTrack(parsed)
+    }
+
+    fun playYouTubeMusicTrack(track: YouTubeMusicTrack) {
+        if (uiState.value.isEffectivelyOffline) {
+            _snackbarEvents.tryEmit("Turn off Offline Mode to play YouTube Music.")
+            return
+        }
+        // Pause local Media3 playback so embedded YouTube audio doesn't overlap
+        if (playerState.value.isPlaying) {
+            playerManager.togglePlayPause()
+        }
+        _servicesState.update { it.copy(activeYouTubeTrack = track) }
+    }
+
+    fun closeYouTubePlayer() {
+        _servicesState.update { it.copy(activeYouTubeTrack = null) }
+    }
+
+    fun openInYouTubeMusicApp(context: Context, videoId: String) {
+        youTubeClient.openInYouTubeMusicApp(context, videoId)
+    }
+
+    // --- Core Offline & Online Playback ---
 
     fun playTrack(track: TrackEntity, contextQueue: List<TrackEntity> = uiState.value.allTracks) {
         val state = uiState.value
@@ -241,11 +547,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             _snackbarEvents.tryEmit("Sleep timer cancelled")
         }
-    }
-
-    fun cancelSleepTimer() {
-        playerManager.cancelSleepTimer()
-        _snackbarEvents.tryEmit("Sleep timer cancelled")
     }
 
     fun addToQueue(track: TrackEntity) {

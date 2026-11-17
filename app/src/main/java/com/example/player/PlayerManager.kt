@@ -2,16 +2,14 @@ package com.example.player
 
 import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import com.example.R
 import com.example.data.model.TrackEntity
+import com.example.data.model.TrackSourceType
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
@@ -38,6 +36,7 @@ data class PlayerUiState(
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val playbackSpeed: Float = 1.0f,
     val sleepTimerRemainingMs: Long? = null,
+    val isConnected: Boolean = false,
     val errorMessage: String? = null,
 )
 
@@ -83,8 +82,7 @@ class PlayerManager(
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val controller = mediaController ?: return
             val index = controller.currentMediaItemIndex
-            val track = mediaItem?.mediaId?.let { queueLookup[it] }
-                ?: _uiState.value.queue.getOrNull(index)
+            val track = resolveTrackFromMediaItem(mediaItem, index)
             if (track != null) {
                 onTrackPlayed(track.id)
             }
@@ -100,12 +98,26 @@ class PlayerManager(
             }
         }
 
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            _uiState.update {
+                it.copy(currentPositionMs = newPosition.positionMs.coerceAtLeast(0L))
+            }
+        }
+
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
             _uiState.update { it.copy(shuffleEnabled = shuffleModeEnabled) }
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {
             _uiState.update { it.copy(repeatMode = repeatMode) }
+        }
+
+        override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+            _uiState.update { it.copy(playbackSpeed = playbackParameters.speed) }
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -137,36 +149,77 @@ class PlayerManager(
                     val controller = future.get()
                     mediaController = controller
                     controller.addListener(playerListener)
-                    controller.setPlaybackSpeed(_uiState.value.playbackSpeed)
-                    controller.repeatMode = _uiState.value.repeatMode
-                    controller.shuffleModeEnabled = _uiState.value.shuffleEnabled
+                    _uiState.update { it.copy(isConnected = true) }
 
                     pendingTracks?.let { (tracks, startIndex) ->
                         pendingTracks = null
                         setQueueAndPlay(tracks, startIndex)
                     } ?: syncFromController(controller)
+                }.onFailure {
+                    controllerFuture = null
+                    _uiState.update { it.copy(isConnected = false) }
                 }
             },
             MoreExecutors.directExecutor()
         )
     }
 
+    fun disconnect() {
+        stopPositionPolling()
+        mediaController?.removeListener(playerListener)
+        mediaController = null
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        controllerFuture = null
+        _uiState.update { it.copy(isConnected = false) }
+    }
+
     private fun syncFromController(controller: MediaController) {
-        val currentId = controller.currentMediaItem?.mediaId
-        val track = currentId?.let { queueLookup[it] } ?: _uiState.value.currentTrack
+        val restoredQueue = if (controller.mediaItemCount > 0) {
+            (0 until controller.mediaItemCount).mapNotNull { idx ->
+                resolveTrackFromMediaItem(controller.getMediaItemAt(idx), idx)
+            }
+        } else {
+            _uiState.value.queue
+        }
+
+        val currentIndex = controller.currentMediaItemIndex
+        val currentTrack = resolveTrackFromMediaItem(controller.currentMediaItem, currentIndex)
+            ?: restoredQueue.getOrNull(currentIndex)
+            ?: _uiState.value.currentTrack
+
         _uiState.update {
             it.copy(
-                currentTrack = track,
-                currentQueueIndex = controller.currentMediaItemIndex,
+                currentTrack = currentTrack,
+                queue = restoredQueue,
+                currentQueueIndex = currentIndex,
                 isPlaying = controller.isPlaying,
                 isBuffering = controller.playbackState == Player.STATE_BUFFERING,
                 currentPositionMs = controller.currentPosition.coerceAtLeast(0L),
-                durationMs = controller.duration.takeIf { d -> d > 0L } ?: track?.durationMs ?: 0L,
+                durationMs = controller.duration.takeIf { d -> d > 0L } ?: currentTrack?.durationMs ?: 0L,
                 shuffleEnabled = controller.shuffleModeEnabled,
                 repeatMode = controller.repeatMode,
+                playbackSpeed = controller.playbackParameters.speed,
+                isConnected = true,
             )
         }
         if (controller.isPlaying) startPositionPolling()
+    }
+
+    private fun resolveTrackFromMediaItem(mediaItem: MediaItem?, index: Int): TrackEntity? {
+        if (mediaItem == null) return _uiState.value.queue.getOrNull(index)
+        queueLookup[mediaItem.mediaId]?.let { return it }
+        _uiState.value.queue.getOrNull(index)?.let { if (it.id == mediaItem.mediaId) return it }
+        val meta = mediaItem.mediaMetadata
+        val title = meta.title?.toString() ?: return null
+        return TrackEntity(
+            id = mediaItem.mediaId,
+            title = title,
+            artist = meta.artist?.toString().orEmpty().ifBlank { "Unknown Artist" },
+            album = meta.albumTitle?.toString().orEmpty(),
+            genre = meta.genre?.toString().orEmpty().ifBlank { "Audio" },
+            durationMs = 0L,
+            sourceType = TrackSourceType.ONLINE,
+        )
     }
 
     fun playTrack(track: TrackEntity, queue: List<TrackEntity> = listOf(track)) {
@@ -197,7 +250,7 @@ class PlayerManager(
             return
         }
 
-        val mediaItems = tracks.map { toMediaItem(it) }
+        val mediaItems = tracks.map { MediaItemMapper.toMediaItem(context, it) }
         _uiState.update {
             it.copy(
                 currentTrack = targetTrack,
@@ -223,7 +276,7 @@ class PlayerManager(
         }
         val updatedQueue = currentQueue + track
         _uiState.update { it.copy(queue = updatedQueue) }
-        mediaController?.addMediaItem(toMediaItem(track))
+        mediaController?.addMediaItem(MediaItemMapper.toMediaItem(context, track))
     }
 
     fun playNextInQueue(track: TrackEntity) {
@@ -236,7 +289,7 @@ class PlayerManager(
         val insertIndex = (_uiState.value.currentQueueIndex + 1).coerceIn(0, currentQueue.size)
         val updatedQueue = currentQueue.toMutableList().apply { add(insertIndex, track) }
         _uiState.update { it.copy(queue = updatedQueue) }
-        mediaController?.addMediaItem(insertIndex, toMediaItem(track))
+        mediaController?.addMediaItem(insertIndex, MediaItemMapper.toMediaItem(context, track))
     }
 
     fun removeFromQueue(index: Int) {
@@ -400,12 +453,8 @@ class PlayerManager(
     }
 
     fun release() {
-        stopPositionPolling()
         sleepTimerJob?.cancel()
-        mediaController?.removeListener(playerListener)
-        controllerFuture?.let { MediaController.releaseFuture(it) }
-        controllerFuture = null
-        mediaController = null
+        disconnect()
     }
 
     private fun startPositionPolling() {
@@ -430,33 +479,5 @@ class PlayerManager(
     private fun stopPositionPolling() {
         positionPollingJob?.cancel()
         positionPollingJob = null
-    }
-
-    private fun toMediaItem(track: TrackEntity): MediaItem {
-        val artworkUri = when {
-            !track.artworkFilePath.isNullOrBlank() -> Uri.parse("file://${track.artworkFilePath}")
-            else -> {
-                val resId = when (track.artworkResKey) {
-                    "lofi" -> R.drawable.cover_lofi_1794941431952
-                    "electronic" -> R.drawable.cover_electronic_1794941431840
-                    "acoustic" -> R.drawable.cover_acoustic_1794941433359
-                    else -> R.drawable.hero_studio_1794941431881
-                }
-                Uri.parse("android.resource://${context.packageName}/$resId")
-            }
-        }
-
-        val metadata = MediaMetadata.Builder()
-            .setTitle(track.title)
-            .setArtist(track.artist)
-            .setAlbumTitle(track.album)
-            .setArtworkUri(artworkUri)
-            .build()
-
-        return MediaItem.Builder()
-            .setMediaId(track.id)
-            .setUri(track.playableUri)
-            .setMediaMetadata(metadata)
-            .build()
     }
 }

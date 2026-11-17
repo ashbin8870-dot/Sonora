@@ -1,7 +1,9 @@
 package com.example
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -28,10 +30,12 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.QueueMusic
@@ -47,6 +51,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +66,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -81,23 +89,48 @@ import com.example.ui.navigation.LibraryRoute
 import com.example.ui.navigation.PlaylistDetailRoute
 import com.example.ui.navigation.PlaylistsRoute
 import com.example.ui.navigation.SearchRoute
+import com.example.ui.navigation.ServicesRoute
 import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.PlaylistDetailScreen
 import com.example.ui.screens.PlaylistsScreen
 import com.example.ui.screens.SearchScreen
+import com.example.ui.screens.ServicesScreen
 import com.example.ui.theme.SonoraTheme
 import com.example.ui.viewmodel.MusicViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class MainActivity : ComponentActivity() {
+
+    private val pendingAuthUri = MutableStateFlow<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIncomingIntent(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.Transparent.toArgb()),
             navigationBarStyle = SystemBarStyle.dark(Color.Transparent.toArgb())
         )
         setContent {
-            SonoraRoot()
+            val authUri by pendingAuthUri.asStateFlow().collectAsStateWithLifecycle()
+            SonoraRoot(
+                pendingAuthUri = authUri,
+                onAuthUriConsumed = { pendingAuthUri.value = null }
+            )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme == "sonora" && data.host == "spotify-callback") {
+            pendingAuthUri.value = data
         }
     }
 }
@@ -112,11 +145,36 @@ private data class TopLevelDestination(
 
 @Composable
 fun SonoraRoot(
+    pendingAuthUri: Uri? = null,
+    onAuthUriConsumed: () -> Unit = {},
     viewModel: MusicViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val servicesState by viewModel.servicesState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(pendingAuthUri) {
+        pendingAuthUri?.let { uri ->
+            viewModel.handleSpotifyAuthCallback(uri)
+            onAuthUriConsumed()
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.connectMediaController()
+                Lifecycle.Event.ON_STOP -> viewModel.disconnectMediaController()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -185,6 +243,13 @@ fun SonoraRoot(
                 tag = "nav_library"
             ),
             TopLevelDestination(
+                route = ServicesRoute,
+                labelRes = R.string.nav_services,
+                selectedIcon = Icons.Rounded.CloudQueue,
+                unselectedIcon = Icons.Outlined.CloudQueue,
+                tag = "nav_services"
+            ),
+            TopLevelDestination(
                 route = PlaylistsRoute,
                 labelRes = R.string.nav_playlists,
                 selectedIcon = Icons.Rounded.QueueMusic,
@@ -243,6 +308,7 @@ fun SonoraRoot(
                                     val selected = when (dest.route) {
                                         DiscoverRoute -> currentDestination?.hasRoute<DiscoverRoute>() == true
                                         LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
+                                        ServicesRoute -> currentDestination?.hasRoute<ServicesRoute>() == true
                                         PlaylistsRoute -> currentDestination?.hasRoute<PlaylistsRoute>() == true ||
                                             currentDestination?.hasRoute<PlaylistDetailRoute>() == true
                                         SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
@@ -280,6 +346,7 @@ fun SonoraRoot(
                                 val selected = when (dest.route) {
                                     DiscoverRoute -> currentDestination?.hasRoute<DiscoverRoute>() == true
                                     LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
+                                    ServicesRoute -> currentDestination?.hasRoute<ServicesRoute>() == true
                                     PlaylistsRoute -> currentDestination?.hasRoute<PlaylistsRoute>() == true ||
                                         currentDestination?.hasRoute<PlaylistDetailRoute>() == true
                                     SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
@@ -350,6 +417,34 @@ fun SonoraRoot(
                                     onAddToQueue = { viewModel.addToQueue(it) },
                                     onAddToPlaylist = { trackForPlaylistSheet = it },
                                     onDeleteTrack = { viewModel.deleteTrack(it) },
+                                    bottomContentPadding = contentBottomPad
+                                )
+                            }
+
+                            composable<ServicesRoute> {
+                                ServicesScreen(
+                                    homeState = uiState,
+                                    servicesState = servicesState,
+                                    onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
+                                    onSelectService = { viewModel.selectStreamingService(it) },
+                                    onConnectSpotify = { viewModel.startSpotifySignIn(context) },
+                                    onDisconnectSpotify = { viewModel.disconnectSpotify() },
+                                    onRefreshSpotify = { viewModel.refreshSpotifyData() },
+                                    onSelectSpotifyPlaylist = { viewModel.selectSpotifyPlaylist(it) },
+                                    onSpotifyQueryChange = { viewModel.updateSpotifySearchQuery(it) },
+                                    onSearchSpotify = { viewModel.searchSpotifyTracks() },
+                                    onPlaySpotifyPreview = { viewModel.playSpotifyPreview(it) },
+                                    onPlaySpotifyConnect = { viewModel.playOnSpotifyConnect(it) },
+                                    onToggleSpotifyConnectPlayPause = { viewModel.toggleSpotifyConnectPlayPause() },
+                                    onNextSpotifyConnect = { viewModel.nextOnSpotifyConnect() },
+                                    onOpenInSpotify = { viewModel.openInSpotifyApp(context, it) },
+                                    onYouTubeQueryChange = { viewModel.updateYouTubeSearchQuery(it) },
+                                    onSearchYouTube = { viewModel.searchYouTubeMusic(it) },
+                                    onYouTubeDirectUrlChange = { viewModel.updateYouTubeDirectUrl(it) },
+                                    onPlayYouTubeDirectUrl = { viewModel.playYouTubeDirectUrl() },
+                                    onPlayYouTubeTrack = { viewModel.playYouTubeMusicTrack(it) },
+                                    onOpenInYouTubeMusic = { viewModel.openInYouTubeMusicApp(context, it) },
+                                    onDismissYouTubePlayer = { viewModel.closeYouTubePlayer() },
                                     bottomContentPadding = contentBottomPad
                                 )
                             }

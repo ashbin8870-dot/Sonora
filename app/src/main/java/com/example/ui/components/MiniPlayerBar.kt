@@ -75,6 +75,7 @@ fun MiniPlayerBar(
             ArtworkImage(
                 artworkResKey = track.artworkResKey,
                 artworkFilePath = track.artworkFilePath,
+                artworkUrl = track.artworkUrl,
                 isPlaying = playerState.isPlaying,
                 modifier = Modifier.size(44.dp),
                 shape = RoundedCornerShape(10.dp)

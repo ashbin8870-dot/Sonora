@@ -9,6 +9,9 @@ data object DiscoverRoute
 data object LibraryRoute
 
 @Serializable
+data object ServicesRoute
+
+@Serializable
 data object PlaylistsRoute
 
 @Serializable

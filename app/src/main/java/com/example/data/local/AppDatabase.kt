@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.model.DownloadStatus
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.PlaylistTrackCrossRef
@@ -28,7 +30,7 @@ class SonoraConverters {
 
 @Database(
     entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(SonoraConverters::class)
@@ -40,13 +42,22 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tracks ADD COLUMN artworkUrl TEXT")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "sonora_music.db"
-                ).build().also { INSTANCE = it }
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }
