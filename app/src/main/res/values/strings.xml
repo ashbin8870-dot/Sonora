@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">Sonora</string>
+    <string name="nav_discover">Discover</string>
+    <string name="nav_library">Library</string>
+    <string name="nav_playlists">Playlists</string>
+    <string name="nav_search">Search</string>
+    <string name="status_online">Online</string>
+    <string name="status_offline">Offline</string>
+    <string name="offline_mode_only">Offline Mode</string>
+    <string name="import_local_audio">Import Audio</string>
+    <string name="add_stream_url">Add Stream</string>
+    <string name="create_playlist">New Playlist</string>
+    <string name="now_playing">Now Playing</string>
+    <string name="up_next">Up Next</string>
+    <string name="download_for_offline">Save Offline</string>
+    <string name="saved_offline">Saved Offline</string>
+    <string name="remove_offline">Remove Download</string>
+    <string name="live_radio">LIVE RADIO</string>
+    <string name="cd_play">Play</string>
+    <string name="cd_pause">Pause</string>
+    <string name="cd_next">Next track</string>
+    <string name="cd_previous">Previous track</string>
+    <string name="cd_shuffle">Toggle shuffle</string>
+    <string name="cd_repeat">Cycle repeat mode</string>
+    <string name="cd_favorite">Toggle favorite</string>
+    <string name="cd_back">Navigate back</string>
+    <string name="cd_album_art">Track artwork</string>
+    <string name="cd_queue">Open playback queue</string>
+    <string name="cd_sleep_timer">Sleep timer</string>
+    <string name="cd_more_options">More options</string>
+</resources>

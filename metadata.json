@@ -1,0 +1,6 @@
+{
+  "name": "Sonora",
+  "description": "Offline and online music player with local audio import, live radio and music streaming, offline track caching, custom playlists, and background playback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
