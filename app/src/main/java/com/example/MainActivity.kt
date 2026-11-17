@@ -15,8 +15,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -57,7 +55,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -65,6 +65,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -82,8 +83,10 @@ import com.example.data.model.TrackEntity
 import com.example.ui.components.AddStreamDialog
 import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.CreatePlaylistDialog
+import com.example.ui.components.EmbedNowPlayingOverlay
 import com.example.ui.components.MiniPlayerBar
 import com.example.ui.components.NowPlayingSheet
+import com.example.ui.components.PersistentEmbedWebView
 import com.example.ui.navigation.DiscoverRoute
 import com.example.ui.navigation.LibraryRoute
 import com.example.ui.navigation.PlaylistDetailRoute
@@ -151,6 +154,7 @@ fun SonoraRoot(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val servicesState by viewModel.servicesState.collectAsStateWithLifecycle()
+    val embedState by viewModel.embedPlayerState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -186,6 +190,9 @@ fun SonoraRoot(
     var showAddStreamDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var trackForPlaylistSheet by remember { mutableStateOf<TrackEntity?>(null) }
+
+    var miniVideoBounds by remember { mutableStateOf<Rect?>(null) }
+    var expandedVideoBounds by remember { mutableStateOf<Rect?>(null) }
 
     // SAF OpenMultipleDocuments launcher (zero storage permissions needed)
     val audioPickerLauncher = rememberLauncherForActivityResult(
@@ -280,29 +287,74 @@ fun SonoraRoot(
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val useRail = maxWidth >= 600.dp
 
-            Scaffold(
+            Box(
                 modifier = Modifier.fillMaxSize(),
-                contentWindowInsets = WindowInsets.safeDrawing,
-                snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-                bottomBar = {
-                    if (!useRail) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            AnimatedVisibility(
-                                visible = playerState.currentTrack != null,
-                                enter = slideInVertically { it } + fadeIn(),
-                                exit = slideOutVertically { it } + fadeOut()
-                            ) {
+                contentAlignment = Alignment.TopStart
+            ) {
+                Scaffold(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(0f),
+                    contentWindowInsets = WindowInsets.safeDrawing,
+                    snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+                    bottomBar = {
+                        if (!useRail) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
                                 MiniPlayerBar(
                                     playerState = playerState,
-                                    onExpandClick = { showNowPlaying = true },
-                                    onTogglePlayPause = { viewModel.togglePlayPause() },
-                                    onNextClick = { viewModel.skipNext() }
+                                    embedState = embedState,
+                                    onExpandMedia3Click = { showNowPlaying = true },
+                                    onToggleMedia3PlayPause = { viewModel.togglePlayPause() },
+                                    onNextMedia3Click = { viewModel.skipNext() },
+                                    onExpandEmbedClick = { viewModel.setEmbedExpanded(true) },
+                                    onToggleEmbedPlayPause = { viewModel.toggleEmbedPlayPause() },
+                                    onNextEmbedClick = { viewModel.skipNextEmbed() },
+                                    onCloseEmbedClick = { viewModel.closeEmbedPlayer() },
+                                    onMiniVideoSlotPositioned = { miniVideoBounds = it },
+                                    onQuickPlayClick = { viewModel.quickPlayDefault() }
                                 )
-                            }
 
-                            NavigationBar(
+                                NavigationBar(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                    tonalElevation = 4.dp
+                                ) {
+                                    topDestinations.forEach { dest ->
+                                        val selected = when (dest.route) {
+                                            DiscoverRoute -> currentDestination?.hasRoute<DiscoverRoute>() == true
+                                            LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
+                                            ServicesRoute -> currentDestination?.hasRoute<ServicesRoute>() == true
+                                            PlaylistsRoute -> currentDestination?.hasRoute<PlaylistsRoute>() == true ||
+                                                currentDestination?.hasRoute<PlaylistDetailRoute>() == true
+                                            SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
+                                            else -> false
+                                        }
+                                        NavigationBarItem(
+                                            selected = selected,
+                                            onClick = { navigateToTopLevel(dest.route) },
+                                            icon = {
+                                                Icon(
+                                                    imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
+                                                    contentDescription = stringResource(dest.labelRes)
+                                                )
+                                            },
+                                            label = { Text(stringResource(dest.labelRes)) },
+                                            modifier = Modifier.testTag(dest.tag)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ) { innerPadding ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                    ) {
+                        if (useRail) {
+                            NavigationRail(
                                 containerColor = MaterialTheme.colorScheme.surface,
-                                tonalElevation = 4.dp
+                                modifier = Modifier.fillMaxHeight()
                             ) {
                                 topDestinations.forEach { dest ->
                                     val selected = when (dest.route) {
@@ -314,7 +366,7 @@ fun SonoraRoot(
                                         SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
                                         else -> false
                                     }
-                                    NavigationBarItem(
+                                    NavigationRailItem(
                                         selected = selected,
                                         onClick = { navigateToTopLevel(dest.route) },
                                         icon = {
@@ -329,256 +381,262 @@ fun SonoraRoot(
                                 }
                             }
                         }
-                    }
-                }
-            ) { innerPadding ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding)
-                ) {
-                    if (useRail) {
-                        NavigationRail(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            modifier = Modifier.fillMaxHeight()
-                        ) {
-                            topDestinations.forEach { dest ->
-                                val selected = when (dest.route) {
-                                    DiscoverRoute -> currentDestination?.hasRoute<DiscoverRoute>() == true
-                                    LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
-                                    ServicesRoute -> currentDestination?.hasRoute<ServicesRoute>() == true
-                                    PlaylistsRoute -> currentDestination?.hasRoute<PlaylistsRoute>() == true ||
-                                        currentDestination?.hasRoute<PlaylistDetailRoute>() == true
-                                    SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
-                                    else -> false
-                                }
-                                NavigationRailItem(
-                                    selected = selected,
-                                    onClick = { navigateToTopLevel(dest.route) },
-                                    icon = {
-                                        Icon(
-                                            imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                            contentDescription = stringResource(dest.labelRes)
-                                        )
-                                    },
-                                    label = { Text(stringResource(dest.labelRes)) },
-                                    modifier = Modifier.testTag(dest.tag)
-                                )
-                            }
-                        }
-                    }
 
-                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                        val contentBottomPad = if (useRail && playerState.currentTrack != null) {
-                            PaddingValues(bottom = 82.dp)
-                        } else {
-                            PaddingValues(bottom = 0.dp)
-                        }
-
-                        NavHost(
-                            navController = navController,
-                            startDestination = DiscoverRoute,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            composable<DiscoverRoute> {
-                                DiscoverScreen(
-                                    uiState = uiState,
-                                    playerState = playerState,
-                                    onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
-                                    onToggleTheme = { viewModel.toggleDarkTheme() },
-                                    onImportLocalAudio = { audioPickerLauncher.launch(arrayOf("audio/*")) },
-                                    onOpenAddStreamDialog = { showAddStreamDialog = true },
-                                    onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
-                                    onShufflePlay = { tracks -> viewModel.shuffleAndPlay(tracks) },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onDownloadTrack = { viewModel.downloadTrack(it) },
-                                    onRemoveDownload = { viewModel.removeDownload(it) },
-                                    onPlayNext = { viewModel.playNextInQueue(it) },
-                                    onAddToQueue = { viewModel.addToQueue(it) },
-                                    onAddToPlaylist = { trackForPlaylistSheet = it },
-                                    onDeleteTrack = { viewModel.deleteTrack(it) },
-                                    bottomContentPadding = contentBottomPad
-                                )
+                        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                            val contentBottomPad = if (useRail) {
+                                PaddingValues(bottom = 86.dp)
+                            } else {
+                                PaddingValues(bottom = 0.dp)
                             }
 
-                            composable<LibraryRoute> {
-                                LibraryScreen(
-                                    uiState = uiState,
-                                    playerState = playerState,
-                                    onSelectTab = { viewModel.selectLibraryTab(it) },
-                                    onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
-                                    onImportLocalAudio = { audioPickerLauncher.launch(arrayOf("audio/*")) },
-                                    onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
-                                    onShufflePlay = { tracks -> viewModel.shuffleAndPlay(tracks) },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onDownloadTrack = { viewModel.downloadTrack(it) },
-                                    onRemoveDownload = { viewModel.removeDownload(it) },
-                                    onPlayNext = { viewModel.playNextInQueue(it) },
-                                    onAddToQueue = { viewModel.addToQueue(it) },
-                                    onAddToPlaylist = { trackForPlaylistSheet = it },
-                                    onDeleteTrack = { viewModel.deleteTrack(it) },
-                                    bottomContentPadding = contentBottomPad
-                                )
-                            }
-
-                            composable<ServicesRoute> {
-                                ServicesScreen(
-                                    homeState = uiState,
-                                    servicesState = servicesState,
-                                    onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
-                                    onSelectService = { viewModel.selectStreamingService(it) },
-                                    onConnectSpotify = { viewModel.startSpotifySignIn(context) },
-                                    onDisconnectSpotify = { viewModel.disconnectSpotify() },
-                                    onRefreshSpotify = { viewModel.refreshSpotifyData() },
-                                    onSelectSpotifyPlaylist = { viewModel.selectSpotifyPlaylist(it) },
-                                    onSpotifyQueryChange = { viewModel.updateSpotifySearchQuery(it) },
-                                    onSearchSpotify = { viewModel.searchSpotifyTracks() },
-                                    onPlaySpotifyPreview = { viewModel.playSpotifyPreview(it) },
-                                    onPlaySpotifyConnect = { viewModel.playOnSpotifyConnect(it) },
-                                    onToggleSpotifyConnectPlayPause = { viewModel.toggleSpotifyConnectPlayPause() },
-                                    onNextSpotifyConnect = { viewModel.nextOnSpotifyConnect() },
-                                    onOpenInSpotify = { viewModel.openInSpotifyApp(context, it) },
-                                    onYouTubeQueryChange = { viewModel.updateYouTubeSearchQuery(it) },
-                                    onSearchYouTube = { viewModel.searchYouTubeMusic(it) },
-                                    onYouTubeDirectUrlChange = { viewModel.updateYouTubeDirectUrl(it) },
-                                    onPlayYouTubeDirectUrl = { viewModel.playYouTubeDirectUrl() },
-                                    onPlayYouTubeTrack = { viewModel.playYouTubeMusicTrack(it) },
-                                    onOpenInYouTubeMusic = { viewModel.openInYouTubeMusicApp(context, it) },
-                                    onDismissYouTubePlayer = { viewModel.closeYouTubePlayer() },
-                                    bottomContentPadding = contentBottomPad
-                                )
-                            }
-
-                            composable<PlaylistsRoute> {
-                                PlaylistsScreen(
-                                    playlists = uiState.playlists,
-                                    onOpenPlaylist = { id -> navController.navigate(PlaylistDetailRoute(id)) },
-                                    onCreatePlaylistClick = { showCreatePlaylistDialog = true },
-                                    onDeletePlaylist = { id, name -> viewModel.deletePlaylist(id, name) },
-                                    onPlayPlaylist = { pl ->
-                                        pl.tracks.firstOrNull()?.let { first ->
-                                            viewModel.playTrack(first, pl.tracks)
-                                        }
-                                    },
-                                    bottomContentPadding = contentBottomPad
-                                )
-                            }
-
-                            composable<PlaylistDetailRoute> { entry ->
-                                val args = entry.toRoute<PlaylistDetailRoute>()
-                                val playlistState by viewModel.observePlaylist(args.playlistId)
-                                    .collectAsStateWithLifecycle(initialValue = null)
-                                PlaylistDetailScreen(
-                                    playlistWithTracks = playlistState,
-                                    uiState = uiState,
-                                    playerState = playerState,
-                                    onBack = { navController.popBackStack() },
-                                    onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
-                                    onShufflePlay = { tracks -> viewModel.shuffleAndPlay(tracks) },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onDownloadTrack = { viewModel.downloadTrack(it) },
-                                    onRemoveDownload = { viewModel.removeDownload(it) },
-                                    onPlayNext = { viewModel.playNextInQueue(it) },
-                                    onAddToQueue = { viewModel.addToQueue(it) },
-                                    onAddTrackToThisPlaylist = { plId, plName, tId ->
-                                        viewModel.addTrackToPlaylist(plId, plName, tId)
-                                    },
-                                    onRemoveTrackFromThisPlaylist = { plId, tId ->
-                                        viewModel.removeTrackFromPlaylist(plId, tId)
-                                    },
-                                    onOpenPlaylistPicker = { trackForPlaylistSheet = it },
-                                    bottomContentPadding = contentBottomPad
-                                )
-                            }
-
-                            composable<SearchRoute> {
-                                SearchScreen(
-                                    uiState = uiState,
-                                    playerState = playerState,
-                                    onQueryChange = { viewModel.updateSearchQuery(it) },
-                                    onSelectFilter = { viewModel.selectSearchFilter(it) },
-                                    onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onDownloadTrack = { viewModel.downloadTrack(it) },
-                                    onRemoveDownload = { viewModel.removeDownload(it) },
-                                    onPlayNext = { viewModel.playNextInQueue(it) },
-                                    onAddToQueue = { viewModel.addToQueue(it) },
-                                    onAddToPlaylist = { trackForPlaylistSheet = it },
-                                    onDeleteTrack = { viewModel.deleteTrack(it) },
-                                    bottomContentPadding = contentBottomPad
-                                )
-                            }
-                        }
-
-                        if (useRail && playerState.currentTrack != null) {
-                            Box(
-                                modifier = Modifier
-                                    .align(androidx.compose.ui.Alignment.BottomCenter)
-                                    .navigationBarsPadding()
+                            NavHost(
+                                navController = navController,
+                                startDestination = DiscoverRoute,
+                                modifier = Modifier.fillMaxSize()
                             ) {
-                                MiniPlayerBar(
-                                    playerState = playerState,
-                                    onExpandClick = { showNowPlaying = true },
-                                    onTogglePlayPause = { viewModel.togglePlayPause() },
-                                    onNextClick = { viewModel.skipNext() }
-                                )
+                                composable<DiscoverRoute> {
+                                    DiscoverScreen(
+                                        uiState = uiState,
+                                        playerState = playerState,
+                                        onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
+                                        onToggleTheme = { viewModel.toggleDarkTheme() },
+                                        onImportLocalAudio = { audioPickerLauncher.launch(arrayOf("audio/*")) },
+                                        onOpenAddStreamDialog = { showAddStreamDialog = true },
+                                        onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
+                                        onShufflePlay = { tracks -> viewModel.shuffleAndPlay(tracks) },
+                                        onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                        onDownloadTrack = { viewModel.downloadTrack(it) },
+                                        onRemoveDownload = { viewModel.removeDownload(it) },
+                                        onPlayNext = { viewModel.playNextInQueue(it) },
+                                        onAddToQueue = { viewModel.addToQueue(it) },
+                                        onAddToPlaylist = { trackForPlaylistSheet = it },
+                                        onDeleteTrack = { viewModel.deleteTrack(it) },
+                                        bottomContentPadding = contentBottomPad
+                                    )
+                                }
+
+                                composable<LibraryRoute> {
+                                    LibraryScreen(
+                                        uiState = uiState,
+                                        playerState = playerState,
+                                        onSelectTab = { viewModel.selectLibraryTab(it) },
+                                        onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
+                                        onImportLocalAudio = { audioPickerLauncher.launch(arrayOf("audio/*")) },
+                                        onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
+                                        onShufflePlay = { tracks -> viewModel.shuffleAndPlay(tracks) },
+                                        onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                        onDownloadTrack = { viewModel.downloadTrack(it) },
+                                        onRemoveDownload = { viewModel.removeDownload(it) },
+                                        onPlayNext = { viewModel.playNextInQueue(it) },
+                                        onAddToQueue = { viewModel.addToQueue(it) },
+                                        onAddToPlaylist = { trackForPlaylistSheet = it },
+                                        onDeleteTrack = { viewModel.deleteTrack(it) },
+                                        bottomContentPadding = contentBottomPad
+                                    )
+                                }
+
+                                composable<ServicesRoute> {
+                                    ServicesScreen(
+                                        homeState = uiState,
+                                        servicesState = servicesState,
+                                        embedState = embedState,
+                                        activeMedia3TrackId = playerState.currentTrack?.id,
+                                        onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
+                                        onSelectService = { viewModel.selectStreamingService(it) },
+                                        onConnectSpotify = { viewModel.startSpotifySignIn(context) },
+                                        onDisconnectSpotify = { viewModel.disconnectSpotify() },
+                                        onRefreshSpotify = { viewModel.refreshSpotifyData() },
+                                        onSelectSpotifyPlaylist = { viewModel.selectSpotifyPlaylist(it) },
+                                        onSpotifyQueryChange = { viewModel.updateSpotifySearchQuery(it) },
+                                        onSearchSpotify = { viewModel.searchSpotifyTracks() },
+                                        onSpotifyDirectUrlChange = { viewModel.updateSpotifyDirectUrl(it) },
+                                        onPlaySpotifyDirectUrl = { viewModel.playSpotifyDirectUrl() },
+                                        onPlaySpotifyTrack = { viewModel.playSpotifyTrack(it) },
+                                        onPlaySpotifyInAppEmbed = { viewModel.playSpotifyInAppEmbed(it) },
+                                        onPlaySpotifyConnect = { viewModel.playOnSpotifyConnect(it) },
+                                        onToggleSpotifyConnectPlayPause = { viewModel.toggleSpotifyConnectPlayPause() },
+                                        onNextSpotifyConnect = { viewModel.nextOnSpotifyConnect() },
+                                        onYouTubeQueryChange = { viewModel.updateYouTubeSearchQuery(it) },
+                                        onSearchYouTube = { viewModel.searchYouTubeMusic(it) },
+                                        onYouTubeDirectUrlChange = { viewModel.updateYouTubeDirectUrl(it) },
+                                        onPlayYouTubeDirectUrl = { viewModel.playYouTubeDirectUrl() },
+                                        onPlayYouTubeTrack = { viewModel.playYouTubeMusicTrack(it) },
+                                        bottomContentPadding = contentBottomPad
+                                    )
+                                }
+
+                                composable<PlaylistsRoute> {
+                                    PlaylistsScreen(
+                                        playlists = uiState.playlists,
+                                        onOpenPlaylist = { id -> navController.navigate(PlaylistDetailRoute(id)) },
+                                        onCreatePlaylistClick = { showCreatePlaylistDialog = true },
+                                        onDeletePlaylist = { id, name -> viewModel.deletePlaylist(id, name) },
+                                        onPlayPlaylist = { pl ->
+                                            pl.tracks.firstOrNull()?.let { first ->
+                                                viewModel.playTrack(first, pl.tracks)
+                                            }
+                                        },
+                                        bottomContentPadding = contentBottomPad
+                                    )
+                                }
+
+                                composable<PlaylistDetailRoute> { entry ->
+                                    val args = entry.toRoute<PlaylistDetailRoute>()
+                                    val playlistState by viewModel.observePlaylist(args.playlistId)
+                                        .collectAsStateWithLifecycle(initialValue = null)
+                                    PlaylistDetailScreen(
+                                        playlistWithTracks = playlistState,
+                                        uiState = uiState,
+                                        playerState = playerState,
+                                        onBack = { navController.popBackStack() },
+                                        onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
+                                        onShufflePlay = { tracks -> viewModel.shuffleAndPlay(tracks) },
+                                        onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                        onDownloadTrack = { viewModel.downloadTrack(it) },
+                                        onRemoveDownload = { viewModel.removeDownload(it) },
+                                        onPlayNext = { viewModel.playNextInQueue(it) },
+                                        onAddToQueue = { viewModel.addToQueue(it) },
+                                        onAddTrackToThisPlaylist = { plId, plName, tId ->
+                                            viewModel.addTrackToPlaylist(plId, plName, tId)
+                                        },
+                                        onRemoveTrackFromThisPlaylist = { plId, tId ->
+                                            viewModel.removeTrackFromPlaylist(plId, tId)
+                                        },
+                                        onOpenPlaylistPicker = { trackForPlaylistSheet = it },
+                                        bottomContentPadding = contentBottomPad
+                                    )
+                                }
+
+                                composable<SearchRoute> {
+                                    SearchScreen(
+                                        uiState = uiState,
+                                        playerState = playerState,
+                                        onQueryChange = { viewModel.updateSearchQuery(it) },
+                                        onSelectFilter = { viewModel.selectSearchFilter(it) },
+                                        onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
+                                        onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                        onDownloadTrack = { viewModel.downloadTrack(it) },
+                                        onRemoveDownload = { viewModel.removeDownload(it) },
+                                        onPlayNext = { viewModel.playNextInQueue(it) },
+                                        onAddToQueue = { viewModel.addToQueue(it) },
+                                        onAddToPlaylist = { trackForPlaylistSheet = it },
+                                        onDeleteTrack = { viewModel.deleteTrack(it) },
+                                        bottomContentPadding = contentBottomPad
+                                    )
+                                }
+                            }
+
+                            if (useRail) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .navigationBarsPadding()
+                                ) {
+                                    MiniPlayerBar(
+                                        playerState = playerState,
+                                        embedState = embedState,
+                                        onExpandMedia3Click = { showNowPlaying = true },
+                                        onToggleMedia3PlayPause = { viewModel.togglePlayPause() },
+                                        onNextMedia3Click = { viewModel.skipNext() },
+                                        onExpandEmbedClick = { viewModel.setEmbedExpanded(true) },
+                                        onToggleEmbedPlayPause = { viewModel.toggleEmbedPlayPause() },
+                                        onNextEmbedClick = { viewModel.skipNextEmbed() },
+                                        onCloseEmbedClick = { viewModel.closeEmbedPlayer() },
+                                        onMiniVideoSlotPositioned = { miniVideoBounds = it },
+                                        onQuickPlayClick = { viewModel.quickPlayDefault() }
+                                    )
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if (showNowPlaying && playerState.currentTrack != null) {
-                val curId = playerState.currentTrack?.id
-                NowPlayingSheet(
-                    playerState = playerState,
-                    downloadProgress = curId?.let { uiState.downloadProgress[it] },
-                    onDismiss = { showNowPlaying = false },
-                    onTogglePlayPause = { viewModel.togglePlayPause() },
-                    onSeekTo = { viewModel.seekTo(it) },
-                    onSkipPrevious = { viewModel.skipPrevious() },
-                    onSkipNext = { viewModel.skipNext() },
-                    onToggleShuffle = { viewModel.toggleShuffle() },
-                    onCycleRepeat = { viewModel.cycleRepeatMode() },
-                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                    onDownloadTrack = { viewModel.downloadTrack(it) },
-                    onRemoveDownload = { viewModel.removeDownload(it) },
-                    onAddToPlaylist = { trackForPlaylistSheet = it },
-                    onSetSpeed = { viewModel.setPlaybackSpeed(it) },
-                    onSetSleepTimer = { viewModel.setSleepTimer(it) },
-                    onJumpToQueueIndex = { viewModel.jumpToQueueIndex(it) },
-                    onRemoveFromQueue = { viewModel.removeFromQueue(it) }
-                )
-            }
+                // Expanded In-App Player Overlay for YouTube Music & Spotify Embed
+                AnimatedVisibility(
+                    visible = embedState.isActive && embedState.isExpanded,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.zIndex(10f)
+                ) {
+                    EmbedNowPlayingOverlay(
+                        embedState = embedState,
+                        onCollapse = { viewModel.setEmbedExpanded(false) },
+                        onClose = { viewModel.closeEmbedPlayer() },
+                        onTogglePlayPause = { viewModel.toggleEmbedPlayPause() },
+                        onSeekTo = { viewModel.seekEmbedTo(it) },
+                        onSkipPrevious = { viewModel.skipPreviousEmbed() },
+                        onSkipNext = { viewModel.skipNextEmbed() },
+                        onJumpToQueueIndex = { viewModel.jumpToEmbedQueueIndex(it) },
+                        onExpandedSlotPositioned = { expandedVideoBounds = it }
+                    )
+                }
 
-            if (showAddStreamDialog) {
-                AddStreamDialog(
-                    onDismiss = { showAddStreamDialog = false },
-                    onConfirm = { title, artist, url, genre, isLive, playNow ->
-                        viewModel.addCustomStream(title, artist, url, genre, isLive, playNow)
-                    }
-                )
-            }
+                // Single persistent WebView hosted at root so audio/video never reloads or stops on navigation or collapse
+                if (embedState.isActive) {
+                    PersistentEmbedWebView(
+                        embedState = embedState,
+                        embedCommands = viewModel.embedCommands,
+                        targetBounds = if (embedState.isExpanded) expandedVideoBounds else miniVideoBounds,
+                        onYouTubeReady = { viewModel.onYouTubeReady() },
+                        onYouTubeStateChanged = { viewModel.onYouTubeStateChanged(it) },
+                        onYouTubeProgress = { pos, dur -> viewModel.onYouTubeProgress(pos, dur) },
+                        onYouTubeError = { viewModel.onYouTubeError(it) },
+                        modifier = Modifier.zIndex(if (embedState.isExpanded) 11f else 2f)
+                    )
+                }
 
-            if (showCreatePlaylistDialog) {
-                CreatePlaylistDialog(
-                    onDismiss = { showCreatePlaylistDialog = false },
-                    onCreate = { name, desc, coverKey ->
-                        viewModel.createPlaylist(name, desc, coverKey)
-                    }
-                )
-            }
+                if (showNowPlaying && playerState.currentTrack != null) {
+                    val curId = playerState.currentTrack?.id
+                    NowPlayingSheet(
+                        playerState = playerState,
+                        downloadProgress = curId?.let { uiState.downloadProgress[it] },
+                        onDismiss = { showNowPlaying = false },
+                        onTogglePlayPause = { viewModel.togglePlayPause() },
+                        onSeekTo = { viewModel.seekTo(it) },
+                        onSkipPrevious = { viewModel.skipPrevious() },
+                        onSkipNext = { viewModel.skipNext() },
+                        onToggleShuffle = { viewModel.toggleShuffle() },
+                        onCycleRepeat = { viewModel.cycleRepeatMode() },
+                        onToggleFavorite = { viewModel.toggleFavorite(it) },
+                        onDownloadTrack = { viewModel.downloadTrack(it) },
+                        onRemoveDownload = { viewModel.removeDownload(it) },
+                        onAddToPlaylist = { trackForPlaylistSheet = it },
+                        onSetSpeed = { viewModel.setPlaybackSpeed(it) },
+                        onSetSleepTimer = { viewModel.setSleepTimer(it) },
+                        onJumpToQueueIndex = { viewModel.jumpToQueueIndex(it) },
+                        onRemoveFromQueue = { viewModel.removeFromQueue(it) }
+                    )
+                }
 
-            trackForPlaylistSheet?.let { selectedTrack ->
-                AddToPlaylistSheet(
-                    track = selectedTrack,
-                    playlists = uiState.playlists,
-                    onDismiss = { trackForPlaylistSheet = null },
-                    onSelectPlaylist = { pl ->
-                        viewModel.addTrackToPlaylist(pl.playlist.id, pl.playlist.name, selectedTrack.id)
-                    },
-                    onCreateNewPlaylist = { showCreatePlaylistDialog = true }
-                )
+                if (showAddStreamDialog) {
+                    AddStreamDialog(
+                        onDismiss = { showAddStreamDialog = false },
+                        onConfirm = { title, artist, url, genre, isLive, playNow ->
+                            viewModel.addCustomStream(title, artist, url, genre, isLive, playNow)
+                        }
+                    )
+                }
+
+                if (showCreatePlaylistDialog) {
+                    CreatePlaylistDialog(
+                        onDismiss = { showCreatePlaylistDialog = false },
+                        onCreate = { name, desc, coverKey ->
+                            viewModel.createPlaylist(name, desc, coverKey)
+                        }
+                    )
+                }
+
+                trackForPlaylistSheet?.let { selectedTrack ->
+                    AddToPlaylistSheet(
+                        track = selectedTrack,
+                        playlists = uiState.playlists,
+                        onDismiss = { trackForPlaylistSheet = null },
+                        onSelectPlaylist = { pl ->
+                            viewModel.addTrackToPlaylist(pl.playlist.id, pl.playlist.name, selectedTrack.id)
+                        },
+                        onCreateNewPlaylist = { showCreatePlaylistDialog = true }
+                    )
+                }
             }
         }
     }

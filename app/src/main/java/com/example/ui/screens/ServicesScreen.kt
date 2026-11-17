@@ -1,9 +1,5 @@
 package com.example.ui.screens
 
-import android.annotation.SuppressLint
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -13,11 +9,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,9 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.CastConnected
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Login
@@ -44,31 +36,22 @@ import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.remote.SpotifyPlaylist
 import com.example.data.remote.SpotifyTrack
 import com.example.data.remote.YouTubeMusicTrack
@@ -78,6 +61,7 @@ import com.example.ui.components.SourcePill
 import com.example.ui.components.formatDuration
 import com.example.ui.theme.EmeraldOffline
 import com.example.ui.theme.SoftRose
+import com.example.ui.viewmodel.EmbedPlayerUiState
 import com.example.ui.viewmodel.MusicHomeUiState
 import com.example.ui.viewmodel.ServicesUiState
 import com.example.ui.viewmodel.StreamingServiceTab
@@ -89,28 +73,30 @@ private val YouTubeMusicRed = Color(0xFFFF4E45)
 fun ServicesScreen(
     homeState: MusicHomeUiState,
     servicesState: ServicesUiState,
+    embedState: EmbedPlayerUiState,
+    activeMedia3TrackId: String?,
     onToggleOfflineMode: () -> Unit,
     onSelectService: (StreamingServiceTab) -> Unit,
-    // Spotify callbacks
+    // Spotify callbacks (all strictly in-app or remote Spotify Connect)
     onConnectSpotify: () -> Unit,
     onDisconnectSpotify: () -> Unit,
     onRefreshSpotify: () -> Unit,
     onSelectSpotifyPlaylist: (SpotifyPlaylist) -> Unit,
     onSpotifyQueryChange: (String) -> Unit,
     onSearchSpotify: () -> Unit,
-    onPlaySpotifyPreview: (SpotifyTrack) -> Unit,
+    onSpotifyDirectUrlChange: (String) -> Unit,
+    onPlaySpotifyDirectUrl: () -> Unit,
+    onPlaySpotifyTrack: (SpotifyTrack) -> Unit,
+    onPlaySpotifyInAppEmbed: (SpotifyTrack) -> Unit,
     onPlaySpotifyConnect: (SpotifyTrack) -> Unit,
     onToggleSpotifyConnectPlayPause: () -> Unit,
     onNextSpotifyConnect: () -> Unit,
-    onOpenInSpotify: (SpotifyTrack) -> Unit,
-    // YouTube Music callbacks
+    // YouTube Music callbacks (all strictly in-app)
     onYouTubeQueryChange: (String) -> Unit,
     onSearchYouTube: (String?) -> Unit,
     onYouTubeDirectUrlChange: (String) -> Unit,
     onPlayYouTubeDirectUrl: () -> Unit,
     onPlayYouTubeTrack: (YouTubeMusicTrack) -> Unit,
-    onOpenInYouTubeMusic: (String) -> Unit,
-    onDismissYouTubePlayer: () -> Unit,
     bottomContentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
@@ -137,7 +123,7 @@ fun ServicesScreen(
                         style = MaterialTheme.typography.headlineMedium
                     )
                     Text(
-                        text = "Spotify & YouTube Music",
+                        text = "Play Spotify & YouTube Music inside Sonora",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -196,6 +182,8 @@ fun ServicesScreen(
                     onConnect = onConnectSpotify,
                     onDisconnect = onDisconnectSpotify,
                     onRefresh = onRefreshSpotify,
+                    onDirectUrlChange = onSpotifyDirectUrlChange,
+                    onPlayDirectUrl = onPlaySpotifyDirectUrl,
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
             }
@@ -372,11 +360,15 @@ fun ServicesScreen(
                     }
 
                     items(servicesState.spotifyTracks, key = { "sp_${it.id}" }) { track ->
+                        val isCurrentlyActive =
+                            embedState.spotifyTrack?.id == track.id ||
+                                activeMedia3TrackId == "spotify_preview_${track.id}"
                         SpotifyTrackRow(
                             track = track,
-                            onPlayPreview = { onPlaySpotifyPreview(track) },
+                            isActive = isCurrentlyActive,
+                            onPlayInSonora = { onPlaySpotifyTrack(track) },
+                            onPlayEmbed = { onPlaySpotifyInAppEmbed(track) },
                             onPlayConnect = { onPlaySpotifyConnect(track) },
-                            onOpenInApp = { onOpenInSpotify(track) },
                             modifier = Modifier.padding(horizontal = 16.dp)
                         )
                     }
@@ -473,21 +465,13 @@ fun ServicesScreen(
                 items(servicesState.youtubeTracks, key = { "yt_${it.videoId}" }) { track ->
                     YouTubeTrackRow(
                         track = track,
-                        onPlayInSheet = { onPlayYouTubeTrack(track) },
-                        onOpenInYtMusic = { onOpenInYouTubeMusic(track.videoId) },
+                        isActive = embedState.youtubeTrack?.videoId == track.videoId,
+                        onPlayInSonora = { onPlayYouTubeTrack(track) },
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
                 }
             }
         }
-    }
-
-    servicesState.activeYouTubeTrack?.let { activeTrack ->
-        YouTubePlayerSheet(
-            track = activeTrack,
-            onDismiss = onDismissYouTubePlayer,
-            onOpenInYouTubeMusic = { onOpenInYouTubeMusic(activeTrack.videoId) }
-        )
     }
 }
 
@@ -498,6 +482,8 @@ private fun SpotifyConnectionCard(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onRefresh: () -> Unit,
+    onDirectUrlChange: (String) -> Unit,
+    onPlayDirectUrl: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -530,7 +516,7 @@ private fun SpotifyConnectionCard(
             }
             SourcePill(
                 label = when {
-                    !state.spotifyConfigured -> "KEY NEEDED"
+                    !state.spotifyConfigured -> "IN-APP LINK"
                     state.spotifySignedIn -> state.spotifyProfile?.productTier ?: "CONNECTED"
                     else -> "OAUTH PKCE"
                 },
@@ -541,14 +527,14 @@ private fun SpotifyConnectionCard(
         when {
             !state.spotifyConfigured -> {
                 Text(
-                    text = "Add your SPOTIFY_CLIENT_ID in the Google AI Studio Secrets panel (with redirect URI sonora://spotify-callback in your Spotify Developer app) to sign in with Spotify OAuth2 PKCE, browse playlists, play 30s previews, and control Spotify Connect devices.",
+                    text = "Add SPOTIFY_CLIENT_ID in the Google AI Studio Secrets panel (redirect URI sonora://spotify-callback) to browse your Spotify library. You can also paste any Spotify track link below to play it inside Sonora.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             !state.spotifySignedIn -> {
                 Text(
-                    text = "Sign in securely with your Spotify account to load your playlists, liked tracks, catalog search, 30s audio previews, and Spotify Connect remote controls.",
+                    text = "Sign in with Spotify to load your playlists, liked songs, and search, then play tracks directly inside Sonora without switching apps.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -587,7 +573,7 @@ private fun SpotifyConnectionCard(
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "${state.spotifyPlaylists.size} playlists loaded",
+                            text = "${state.spotifyPlaylists.size} playlists loaded • Plays in Sonora",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -605,32 +591,68 @@ private fun SpotifyConnectionCard(
                 }
             }
         }
+
+        // Direct Spotify Track URL input (always available to play in-app)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = state.spotifyDirectUrl,
+                onValueChange = onDirectUrlChange,
+                placeholder = { Text("Paste open.spotify.com/track/... link") },
+                leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("spotify_direct_url_input")
+            )
+            FilledTonalButton(
+                onClick = onPlayDirectUrl,
+                enabled = state.spotifyDirectUrl.isNotBlank() && !isEffectivelyOffline,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .height(54.dp)
+                    .testTag("spotify_direct_play_button")
+            ) {
+                Text("Play")
+            }
+        }
     }
 }
 
 @Composable
 private fun SpotifyTrackRow(
     track: SpotifyTrack,
-    onPlayPreview: () -> Unit,
+    isActive: Boolean,
+    onPlayInSonora: () -> Unit,
+    onPlayEmbed: () -> Unit,
     onPlayConnect: () -> Unit,
-    onOpenInApp: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
-            .clickable {
-                if (track.previewUrl != null) onPlayPreview() else onOpenInApp()
-            }
+            .background(
+                if (isActive) SpotifyGreen.copy(alpha = 0.12f)
+                else MaterialTheme.colorScheme.surfaceContainerLow
+            )
+            .border(
+                width = 1.dp,
+                color = if (isActive) SpotifyGreen.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .clickable(onClick = onPlayInSonora)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         ArtworkImage(
             artworkResKey = "electronic",
             artworkUrl = track.artworkUrl,
+            isPlaying = isActive,
             modifier = Modifier.size(54.dp),
             shape = RoundedCornerShape(10.dp)
         )
@@ -654,7 +676,7 @@ private fun SpotifyTrackRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 SourcePill(
-                    label = if (track.previewUrl != null) "30S PREVIEW" else "SPOTIFY APP",
+                    label = if (track.previewUrl != null) "IN-APP 30S" else "SPOTIFY IN-APP",
                     accentColor = SpotifyGreen
                 )
                 if (track.durationMs > 0L) {
@@ -666,12 +688,19 @@ private fun SpotifyTrackRow(
                 }
             }
         }
+        IconButton(onClick = onPlayInSonora) {
+            Icon(
+                imageVector = Icons.Rounded.PlayCircle,
+                contentDescription = "Play in Sonora",
+                tint = SpotifyGreen
+            )
+        }
         if (track.previewUrl != null) {
-            IconButton(onClick = onPlayPreview) {
+            IconButton(onClick = onPlayEmbed) {
                 Icon(
-                    imageVector = Icons.Rounded.PlayCircle,
-                    contentDescription = "Play 30s preview",
-                    tint = SpotifyGreen
+                    imageVector = Icons.Rounded.GraphicEq,
+                    contentDescription = "Open Spotify in-app widget",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -679,13 +708,6 @@ private fun SpotifyTrackRow(
             Icon(
                 imageVector = Icons.Rounded.CastConnected,
                 contentDescription = "Play on Spotify Connect",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        IconButton(onClick = onOpenInApp) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                contentDescription = "Open in Spotify",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -728,14 +750,14 @@ private fun YouTubeMusicSetupAndLinkCard(
                 )
             }
             SourcePill(
-                label = if (state.youtubeConfigured) "API READY" else "DIRECT LINK",
+                label = if (state.youtubeConfigured) "IN-APP READY" else "DIRECT LINK",
                 accentColor = if (state.youtubeConfigured) EmeraldOffline else YouTubeMusicRed
             )
         }
 
         if (!state.youtubeConfigured) {
             Text(
-                text = "Add YOUTUBE_API_KEY in the Google AI Studio Secrets panel to search YouTube Music directly. You can already paste any YouTube or YouTube Music link below to play it in-app.",
+                text = "Add YOUTUBE_API_KEY in the Google AI Studio Secrets panel to search YouTube Music directly. You can already paste any YouTube or YouTube Music link below to play it inside Sonora.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -774,23 +796,31 @@ private fun YouTubeMusicSetupAndLinkCard(
 @Composable
 private fun YouTubeTrackRow(
     track: YouTubeMusicTrack,
-    onPlayInSheet: () -> Unit,
-    onOpenInYtMusic: () -> Unit,
+    isActive: Boolean,
+    onPlayInSonora: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
-            .clickable(onClick = onPlayInSheet)
+            .background(
+                if (isActive) YouTubeMusicRed.copy(alpha = 0.12f)
+                else MaterialTheme.colorScheme.surfaceContainerLow
+            )
+            .border(
+                width = 1.dp,
+                color = if (isActive) YouTubeMusicRed.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .clickable(onClick = onPlayInSonora)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         ArtworkImage(
             artworkResKey = "studio",
             artworkUrl = track.thumbnailUrl,
+            isPlaying = isActive,
             modifier = Modifier.size(60.dp),
             shape = RoundedCornerShape(10.dp)
         )
@@ -811,131 +841,12 @@ private fun YouTubeTrackRow(
             )
             SourcePill(label = "YOUTUBE MUSIC", accentColor = SoftRose)
         }
-        IconButton(onClick = onPlayInSheet) {
+        IconButton(onClick = onPlayInSonora) {
             Icon(
                 imageVector = Icons.Rounded.PlayCircle,
                 contentDescription = "Play in Sonora",
                 tint = YouTubeMusicRed
             )
-        }
-        IconButton(onClick = onOpenInYtMusic) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                contentDescription = "Open in YouTube Music",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@SuppressLint("SetJavaScriptEnabled")
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun YouTubePlayerSheet(
-    track: YouTubeMusicTrack,
-    onDismiss: () -> Unit,
-    onOpenInYouTubeMusic: () -> Unit,
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val context = LocalContext.current
-    val webView = remember(track.videoId) {
-        WebView(context).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            webChromeClient = WebChromeClient()
-            webViewClient = WebViewClient()
-            loadDataWithBaseURL(
-                "https://www.youtube.com",
-                track.embedHtml,
-                "text/html",
-                "UTF-8",
-                null
-            )
-        }
-    }
-
-    DisposableEffect(track.videoId) {
-        onDispose {
-            webView.stopLoading()
-            webView.loadUrl("about:blank")
-            webView.destroy()
-        }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.background
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SourcePill(label = "YOUTUBE MUSIC PLAYER", accentColor = YouTubeMusicRed)
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Close YouTube player")
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color.Black)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp))
-            ) {
-                AndroidView(
-                    factory = { webView },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = track.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = track.channelName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onOpenInYouTubeMusic,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Open in YT Music")
-                }
-                TextButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.weight(0.6f)
-                ) {
-                    Text("Close")
-                }
-            }
         }
     }
 }

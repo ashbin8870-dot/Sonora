@@ -153,6 +153,9 @@ data class SpotifyTrack(
     val spotifyUri: String,
     val externalUrl: String?,
 ) {
+    val embedUrl: String
+        get() = "https://open.spotify.com/embed/track/$id?utm_source=generator&theme=0"
+
     fun toPreviewTrackEntity(): TrackEntity? {
         val url = previewUrl?.takeIf { it.isNotBlank() } ?: return null
         return TrackEntity(
@@ -400,20 +403,27 @@ class SpotifyClient(
         preferencesRepository.clearSpotifySession()
     }
 
-    fun openInSpotifyApp(context: Context, spotifyUri: String, webUrl: String?) {
-        val uriIntent = Intent(Intent.ACTION_VIEW, Uri.parse(spotifyUri)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val launched = runCatching {
-            context.startActivity(uriIntent)
-            true
-        }.getOrDefault(false)
-        if (!launched && !webUrl.isNullOrBlank()) {
-            val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(webUrl)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            runCatching { context.startActivity(webIntent) }
-        }
+    fun parseSpotifyTrackUrl(input: String): SpotifyTrack? {
+        val trimmed = input.trim()
+        if (trimmed.isBlank()) return null
+        val trackId = when {
+            trimmed.startsWith("spotify:track:") -> trimmed.removePrefix("spotify:track:").substringBefore('?')
+            trimmed.contains("open.spotify.com/track/") ->
+                trimmed.substringAfter("open.spotify.com/track/").substringBefore('?').substringBefore('/')
+            else -> null
+        }?.takeIf { it.isNotBlank() } ?: return null
+
+        return SpotifyTrack(
+            id = trackId,
+            title = "Spotify Track",
+            artist = "Spotify Stream",
+            album = "In-App Player",
+            durationMs = 0L,
+            artworkUrl = null,
+            previewUrl = null,
+            spotifyUri = "spotify:track:$trackId",
+            externalUrl = "https://open.spotify.com/track/$trackId"
+        )
     }
 
     private suspend fun authorizedGet(url: String): String {

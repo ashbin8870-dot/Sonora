@@ -352,6 +352,10 @@ class PlayerManager(
         }
     }
 
+    fun pause() {
+        mediaController?.pause()
+    }
+
     fun seekTo(positionMs: Long) {
         mediaController?.seekTo(positionMs.coerceAtLeast(0L))
         _uiState.update { it.copy(currentPositionMs = positionMs.coerceAtLeast(0L)) }

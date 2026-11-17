@@ -1,7 +1,5 @@
 package com.example.data.remote
 
-import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -53,29 +51,67 @@ data class YouTubeMusicTrack(
     val channelName: String,
     val thumbnailUrl: String?,
 ) {
-    val youtubeMusicUrl: String
-        get() = "https://music.youtube.com/watch?v=$videoId"
-
-    val embedHtml: String
-        get() = """
-            <!DOCTYPE html>
-            <html>
-              <head>
-                <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-                <style>
-                  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0E1015; overflow: hidden; }
-                  iframe { width: 100%; height: 100%; border: 0; }
-                </style>
-              </head>
-              <body>
-                <iframe
-                  src="https://www.youtube.com/embed/$videoId?autoplay=1&playsinline=1&rel=0&modestbranding=1"
-                  allow="autoplay; encrypted-media; picture-in-picture"
-                  allowfullscreen>
-                </iframe>
-              </body>
-            </html>
-        """.trimIndent()
+    fun buildIframePlayerHtml(): String = """
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+            <style>
+              html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0E1015; overflow: hidden; }
+              #player { width: 100%; height: 100%; }
+            </style>
+          </head>
+          <body>
+            <div id="player"></div>
+            <script src="https://www.youtube.com/iframe_api"></script>
+            <script>
+              var ytPlayer = null;
+              function onYouTubeIframeAPIReady() {
+                ytPlayer = new YT.Player('player', {
+                  width: '100%',
+                  height: '100%',
+                  videoId: '$videoId',
+                  playerVars: {
+                    autoplay: 1,
+                    playsinline: 1,
+                    rel: 0,
+                    modestbranding: 1,
+                    controls: 1,
+                    fs: 0
+                  },
+                  events: {
+                    onReady: function(e) {
+                      e.target.playVideo();
+                      if (window.SonoraBridge) SonoraBridge.onReady();
+                    },
+                    onStateChange: function(e) {
+                      if (window.SonoraBridge) SonoraBridge.onStateChanged(e.data);
+                    },
+                    onError: function(e) {
+                      if (window.SonoraBridge) SonoraBridge.onError(e.data);
+                    }
+                  }
+                });
+              }
+              function loadVideo(id) {
+                if (ytPlayer && ytPlayer.loadVideoById) {
+                  ytPlayer.loadVideoById(id);
+                }
+              }
+              function playVideo() { if (ytPlayer && ytPlayer.playVideo) ytPlayer.playVideo(); }
+              function pauseVideo() { if (ytPlayer && ytPlayer.pauseVideo) ytPlayer.pauseVideo(); }
+              function seekToSec(sec) { if (ytPlayer && ytPlayer.seekTo) ytPlayer.seekTo(sec, true); }
+              setInterval(function() {
+                if (ytPlayer && ytPlayer.getCurrentTime && ytPlayer.getDuration && window.SonoraBridge) {
+                  var pos = Math.floor((ytPlayer.getCurrentTime() || 0) * 1000);
+                  var dur = Math.floor((ytPlayer.getDuration() || 0) * 1000);
+                  SonoraBridge.onProgress(pos, dur);
+                }
+              }, 500);
+            </script>
+          </body>
+        </html>
+    """.trimIndent()
 }
 
 class YouTubeMusicClient {
@@ -142,33 +178,9 @@ class YouTubeMusicClient {
         return YouTubeMusicTrack(
             videoId = videoId,
             title = "YouTube Music ($videoId)",
-            channelName = "Direct Link",
+            channelName = "In-App Stream",
             thumbnailUrl = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
         )
-    }
-
-    fun openInYouTubeMusicApp(context: Context, videoId: String) {
-        val ytMusicIntent = Intent(
-            Intent.ACTION_VIEW,
-            Uri.parse("https://music.youtube.com/watch?v=$videoId")
-        ).apply {
-            setPackage("com.google.android.apps.youtube.music")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val launched = runCatching {
-            context.startActivity(ytMusicIntent)
-            true
-        }.getOrDefault(false)
-
-        if (!launched) {
-            val fallbackIntent = Intent(
-                Intent.ACTION_VIEW,
-                Uri.parse("https://music.youtube.com/watch?v=$videoId")
-            ).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            runCatching { context.startActivity(fallbackIntent) }
-        }
     }
 
     private fun decodeHtmlEntities(text: String): String {
