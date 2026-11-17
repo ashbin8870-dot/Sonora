@@ -3,10 +3,12 @@ package com.example.ui.components
 import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -133,12 +135,23 @@ fun PersistentEmbedWebView(
     var ytHtmlLoaded by remember { mutableStateOf(false) }
     var lastLoadedKey by remember { mutableStateOf<String?>(null) }
 
+    val originUrl = remember(context.packageName) { "https://${context.packageName}" }
+
     val webView = remember {
         WebView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(android.graphics.Color.parseColor("#0E1015"))
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.loadsImagesAutomatically = true
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            settings.userAgentString = settings.userAgentString
+                .replace("; wv)", ")")
+                .replace("Version/4.0 ", "")
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             webChromeClient = WebChromeClient()
@@ -152,8 +165,15 @@ fun PersistentEmbedWebView(
                     val host = uri.host?.lowercase().orEmpty()
                     // Block any intent://, spotify://, vnd.youtube:// or Play Store redirects
                     if (scheme != "http" && scheme != "https") return true
-                    // Block leaving the embedded player to external YouTube/Spotify app universal links
-                    if (host.endsWith("spotify.link") || host == "youtu.be") return true
+                    // Prevent main-frame navigation away from the embedded player to external YouTube/Spotify pages
+                    if (request?.isForMainFrame == true && (
+                            host.endsWith("spotify.link") ||
+                            host == "youtu.be" ||
+                            (host.contains("youtube.com") && uri.path?.startsWith("/watch") == true)
+                        )
+                    ) {
+                        return true
+                    }
                     return false
                 }
             }
@@ -196,8 +216,8 @@ fun PersistentEmbedWebView(
                 } else {
                     ytHtmlLoaded = true
                     webView.loadDataWithBaseURL(
-                        "https://www.youtube.com",
-                        track.buildIframePlayerHtml(),
+                        originUrl,
+                        track.buildIframePlayerHtml(originUrl),
                         "text/html",
                         "UTF-8",
                         null
@@ -249,6 +269,11 @@ fun PersistentEmbedWebView(
 
     AndroidView(
         factory = { webView },
+        update = { view ->
+            if (!shouldParkHidden) {
+                view.requestLayout()
+            }
+        },
         modifier = viewModifier
     )
 }

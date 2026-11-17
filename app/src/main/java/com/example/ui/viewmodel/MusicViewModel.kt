@@ -606,7 +606,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val message = when (errorCode) {
             2 -> "Invalid YouTube track ID."
             100 -> "This track is private or unavailable."
-            101, 150 -> "The artist restricted embedded playback for this video. Try another result."
+            101, 150, 152, 153 -> "Embedded playback was blocked for this track (code $errorCode). Some official music videos restrict in-app embedding — try another track."
             else -> "YouTube player encountered an error ($errorCode)."
         }
         _embedPlayerState.update {

@@ -51,34 +51,32 @@ data class YouTubeMusicTrack(
     val channelName: String,
     val thumbnailUrl: String?,
 ) {
-    fun buildIframePlayerHtml(): String = """
+    fun buildIframePlayerHtml(originUrl: String): String {
+        val encodedOrigin = Uri.encode(originUrl)
+        return """
         <!DOCTYPE html>
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+            <meta name="referrer" content="strict-origin-when-cross-origin"/>
             <style>
               html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0E1015; overflow: hidden; }
-              #player { width: 100%; height: 100%; }
+              #player { width: 100%; height: 100%; border: 0; }
             </style>
           </head>
           <body>
-            <div id="player"></div>
+            <iframe
+              id="player"
+              src="https://www.youtube.com/embed/$videoId?enablejsapi=1&autoplay=1&playsinline=1&rel=0&modestbranding=1&controls=1&fs=0&origin=$encodedOrigin"
+              referrerpolicy="strict-origin-when-cross-origin"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowfullscreen>
+            </iframe>
             <script src="https://www.youtube.com/iframe_api"></script>
             <script>
               var ytPlayer = null;
               function onYouTubeIframeAPIReady() {
                 ytPlayer = new YT.Player('player', {
-                  width: '100%',
-                  height: '100%',
-                  videoId: '$videoId',
-                  playerVars: {
-                    autoplay: 1,
-                    playsinline: 1,
-                    rel: 0,
-                    modestbranding: 1,
-                    controls: 1,
-                    fs: 0
-                  },
                   events: {
                     onReady: function(e) {
                       e.target.playVideo();
@@ -111,7 +109,8 @@ data class YouTubeMusicTrack(
             </script>
           </body>
         </html>
-    """.trimIndent()
+        """.trimIndent()
+    }
 }
 
 class YouTubeMusicClient {
