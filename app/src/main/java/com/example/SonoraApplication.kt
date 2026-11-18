@@ -6,6 +6,7 @@ import com.example.data.local.PreferencesRepository
 import com.example.data.remote.GlobalMusicSearchClient
 import com.example.data.remote.PlaylistImportClient
 import com.example.data.remote.SpotifyClient
+import com.example.data.remote.TrackStreamResolver
 import com.example.data.remote.YouTubeMusicClient
 import com.example.data.repository.MusicRepository
 import com.example.data.repository.NetworkMonitor
@@ -25,10 +26,18 @@ class SonoraApplication : Application() {
     val spotifyClient: SpotifyClient by lazy { SpotifyClient(preferencesRepository) }
     val youTubeMusicClient: YouTubeMusicClient by lazy { YouTubeMusicClient() }
     val globalMusicSearchClient: GlobalMusicSearchClient by lazy { GlobalMusicSearchClient() }
+    val trackStreamResolver: TrackStreamResolver by lazy {
+        TrackStreamResolver(
+            trackDao = database.trackDao(),
+            spotifyClient = spotifyClient,
+            youTubeMusicClient = youTubeMusicClient
+        )
+    }
     val playlistImportClient: PlaylistImportClient by lazy {
         PlaylistImportClient(
             youTubeMusicClient = youTubeMusicClient,
-            spotifyClient = spotifyClient
+            spotifyClient = spotifyClient,
+            trackStreamResolver = trackStreamResolver
         )
     }
     val musicRepository: MusicRepository by lazy {

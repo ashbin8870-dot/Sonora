@@ -12,9 +12,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -55,7 +52,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -63,7 +59,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -82,12 +77,10 @@ import com.example.ui.components.AddStreamDialog
 import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.CountryPickerSheet
 import com.example.ui.components.CreatePlaylistDialog
-import com.example.ui.components.EmbedNowPlayingOverlay
 import com.example.ui.components.ImportPlaylistDialog
 import com.example.ui.components.ImportPlaylistSourceTab
 import com.example.ui.components.MiniPlayerBar
 import com.example.ui.components.NowPlayingSheet
-import com.example.ui.components.PersistentEmbedWebView
 import com.example.ui.navigation.DiscoverRoute
 import com.example.ui.navigation.LibraryRoute
 import com.example.ui.navigation.PlaylistDetailRoute
@@ -155,7 +148,6 @@ fun SonoraRoot(
     val servicesState by viewModel.servicesState.collectAsStateWithLifecycle()
     val globalSearchState by viewModel.globalSearchState.collectAsStateWithLifecycle()
     val isImportingPlaylist by viewModel.isImportingPlaylist.collectAsStateWithLifecycle()
-    val embedState by viewModel.embedPlayerState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -195,9 +187,6 @@ fun SonoraRoot(
     var showCountryPickerSheet by remember { mutableStateOf(false) }
     var pendingPlaylistCustomName by remember { mutableStateOf("") }
     var trackForPlaylistSheet by remember { mutableStateOf<TrackEntity?>(null) }
-
-    var miniVideoBounds by remember { mutableStateOf<Rect?>(null) }
-    var expandedVideoBounds by remember { mutableStateOf<Rect?>(null) }
 
     // SAF OpenMultipleDocuments launcher (zero storage permissions needed)
     val audioPickerLauncher = rememberLauncherForActivityResult(
@@ -321,9 +310,7 @@ fun SonoraRoot(
                 contentAlignment = Alignment.TopStart
             ) {
                 Scaffold(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .zIndex(0f),
+                    modifier = Modifier.fillMaxSize(),
                     contentWindowInsets = WindowInsets.safeDrawing,
                     snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
                     bottomBar = {
@@ -331,15 +318,9 @@ fun SonoraRoot(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 MiniPlayerBar(
                                     playerState = playerState,
-                                    embedState = embedState,
-                                    onExpandMedia3Click = { showNowPlaying = true },
-                                    onToggleMedia3PlayPause = { viewModel.togglePlayPause() },
-                                    onNextMedia3Click = { viewModel.skipNext() },
-                                    onExpandEmbedClick = { viewModel.setEmbedExpanded(true) },
-                                    onToggleEmbedPlayPause = { viewModel.toggleEmbedPlayPause() },
-                                    onNextEmbedClick = { viewModel.skipNextEmbed() },
-                                    onCloseEmbedClick = { viewModel.closeEmbedPlayer() },
-                                    onMiniVideoSlotPositioned = { miniVideoBounds = it },
+                                    onExpandClick = { showNowPlaying = true },
+                                    onTogglePlayPause = { viewModel.togglePlayPause() },
+                                    onNextClick = { viewModel.skipNext() },
                                     onQuickPlayClick = { viewModel.quickPlayDefault() }
                                 )
 
@@ -549,55 +530,15 @@ fun SonoraRoot(
                                 ) {
                                     MiniPlayerBar(
                                         playerState = playerState,
-                                        embedState = embedState,
-                                        onExpandMedia3Click = { showNowPlaying = true },
-                                        onToggleMedia3PlayPause = { viewModel.togglePlayPause() },
-                                        onNextMedia3Click = { viewModel.skipNext() },
-                                        onExpandEmbedClick = { viewModel.setEmbedExpanded(true) },
-                                        onToggleEmbedPlayPause = { viewModel.toggleEmbedPlayPause() },
-                                        onNextEmbedClick = { viewModel.skipNextEmbed() },
-                                        onCloseEmbedClick = { viewModel.closeEmbedPlayer() },
-                                        onMiniVideoSlotPositioned = { miniVideoBounds = it },
+                                        onExpandClick = { showNowPlaying = true },
+                                        onTogglePlayPause = { viewModel.togglePlayPause() },
+                                        onNextClick = { viewModel.skipNext() },
                                         onQuickPlayClick = { viewModel.quickPlayDefault() }
                                     )
                                 }
                             }
                         }
                     }
-                }
-
-                // Expanded In-App Player Overlay for YouTube Music & Spotify Embed
-                AnimatedVisibility(
-                    visible = embedState.isActive && embedState.isExpanded,
-                    enter = fadeIn(),
-                    exit = fadeOut(),
-                    modifier = Modifier.zIndex(10f)
-                ) {
-                    EmbedNowPlayingOverlay(
-                        embedState = embedState,
-                        onCollapse = { viewModel.setEmbedExpanded(false) },
-                        onClose = { viewModel.closeEmbedPlayer() },
-                        onTogglePlayPause = { viewModel.toggleEmbedPlayPause() },
-                        onSeekTo = { viewModel.seekEmbedTo(it) },
-                        onSkipPrevious = { viewModel.skipPreviousEmbed() },
-                        onSkipNext = { viewModel.skipNextEmbed() },
-                        onJumpToQueueIndex = { viewModel.jumpToEmbedQueueIndex(it) },
-                        onExpandedSlotPositioned = { expandedVideoBounds = it }
-                    )
-                }
-
-                // Single persistent WebView hosted at root so audio/video never reloads or stops on navigation or collapse
-                if (embedState.isActive) {
-                    PersistentEmbedWebView(
-                        embedState = embedState,
-                        embedCommands = viewModel.embedCommands,
-                        targetBounds = if (embedState.isExpanded) expandedVideoBounds else miniVideoBounds,
-                        onYouTubeReady = { viewModel.onYouTubeReady() },
-                        onYouTubeStateChanged = { viewModel.onYouTubeStateChanged(it) },
-                        onYouTubeProgress = { pos, dur -> viewModel.onYouTubeProgress(pos, dur) },
-                        onYouTubeError = { viewModel.onYouTubeError(it) },
-                        modifier = Modifier.zIndex(if (embedState.isExpanded) 11f else 2f)
-                    )
                 }
 
                 if (showNowPlaying && playerState.currentTrack != null) {

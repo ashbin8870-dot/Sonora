@@ -55,8 +55,8 @@ fun TrackSourceBadge(
             Triple("SAVING $pct%", WarmAmber, Icons.Rounded.Downloading)
         }
         track.isLiveStream -> Triple("LIVE RADIO", SoftRose, Icons.Rounded.Podcasts)
-        track.isYouTubeInAppTrack -> Triple("YT MUSIC", SoftRose, Icons.Rounded.SmartDisplay)
-        track.isSpotifyEmbedTrack -> Triple("SPOTIFY", EmeraldOffline, Icons.Rounded.GraphicEq)
+        track.isYouTubeTrack -> Triple("YT MUSIC", SoftRose, Icons.Rounded.SmartDisplay)
+        track.isSpotifyTrack -> Triple("SPOTIFY", EmeraldOffline, Icons.Rounded.GraphicEq)
         track.sourceType == TrackSourceType.LOCAL -> Triple("LOCAL", EmeraldOffline, Icons.Rounded.Folder)
         track.downloadStatus == DownloadStatus.DOWNLOADED -> Triple("OFFLINE", EmeraldOffline, Icons.Rounded.CloudDone)
         else -> Triple("ONLINE", ElectricCyan, Icons.Rounded.Public)

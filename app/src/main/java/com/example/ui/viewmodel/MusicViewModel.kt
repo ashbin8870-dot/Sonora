@@ -10,6 +10,7 @@ import com.example.SonoraApplication
 import com.example.data.local.UserPreferences
 import com.example.data.model.PlaylistWithTracks
 import com.example.data.model.TrackEntity
+import com.example.data.model.TrackSourceType
 import com.example.data.remote.CountryMarket
 import com.example.data.remote.GlobalMusicMarkets
 import com.example.data.remote.GlobalMusicTrack
@@ -58,46 +59,6 @@ enum class SearchFilter(val label: String) {
 enum class StreamingServiceTab(val label: String) {
     SPOTIFY("Spotify"),
     YOUTUBE_MUSIC("YouTube Music")
-}
-
-enum class EmbedPlaybackSource {
-    YOUTUBE_MUSIC,
-    SPOTIFY_EMBED
-}
-
-sealed interface EmbedCommand {
-    data object Play : EmbedCommand
-    data object Pause : EmbedCommand
-    data class SeekToSec(val seconds: Float) : EmbedCommand
-}
-
-data class EmbedPlayerUiState(
-    val source: EmbedPlaybackSource? = null,
-    val youtubeTrack: YouTubeMusicTrack? = null,
-    val youtubeQueue: List<YouTubeMusicTrack> = emptyList(),
-    val youtubeQueueIndex: Int = -1,
-    val spotifyTrack: SpotifyTrack? = null,
-    val spotifyQueue: List<SpotifyTrack> = emptyList(),
-    val spotifyQueueIndex: Int = -1,
-    val isPlaying: Boolean = false,
-    val isBuffering: Boolean = false,
-    val isReady: Boolean = false,
-    val currentPositionMs: Long = 0L,
-    val durationMs: Long = 0L,
-    val isExpanded: Boolean = false,
-    val errorMessage: String? = null,
-) {
-    val isActive: Boolean
-        get() = source != null && (youtubeTrack != null || spotifyTrack != null)
-
-    val title: String
-        get() = youtubeTrack?.title ?: spotifyTrack?.title.orEmpty()
-
-    val subtitle: String
-        get() = youtubeTrack?.channelName ?: spotifyTrack?.artist.orEmpty()
-
-    val artworkUrl: String?
-        get() = youtubeTrack?.thumbnailUrl ?: spotifyTrack?.artworkUrl
 }
 
 data class ServicesUiState(
@@ -191,6 +152,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val youTubeClient = app.youTubeMusicClient
     private val globalSearchClient = app.globalMusicSearchClient
     private val playlistImportClient = app.playlistImportClient
+    private val trackStreamResolver = app.trackStreamResolver
 
     private val selectedLibraryTab = MutableStateFlow(LibraryTab.OFFLINE)
     private val searchQuery = MutableStateFlow("")
@@ -211,12 +173,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val isImportingPlaylist: StateFlow<Boolean> = _isImportingPlaylist.asStateFlow()
 
     private var globalSearchJob: Job? = null
-
-    private val _embedPlayerState = MutableStateFlow(EmbedPlayerUiState())
-    val embedPlayerState: StateFlow<EmbedPlayerUiState> = _embedPlayerState.asStateFlow()
-
-    private val _embedCommands = MutableSharedFlow<EmbedCommand>(extraBufferCapacity = 16)
-    val embedCommands: SharedFlow<EmbedCommand> = _embedCommands.asSharedFlow()
 
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarEvents: SharedFlow<String> = _snackbarEvents.asSharedFlow()
@@ -450,7 +406,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _snackbarEvents.tryEmit("Enter a valid open.spotify.com/track/... or spotify:track:... link.")
             return
         }
-        playSpotifyInAppEmbed(parsed)
+        playSpotifyTrack(parsed)
     }
 
     fun searchSpotifyTracks() {
@@ -483,37 +439,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _snackbarEvents.tryEmit("Turn off Offline Mode to play Spotify tracks.")
             return
         }
-        val entity = track.toPreviewTrackEntity()
-        if (entity != null) {
-            closeEmbedPlayer()
-            val queue = _servicesState.value.spotifyTracks.mapNotNull { it.toPreviewTrackEntity() }
+        viewModelScope.launch {
+            val enriched = trackStreamResolver.enrichSpotifyTrack(track)
+            val entity = enriched.toAppPlayerEntity()
+            repository.upsertTrack(entity)
+            val queue = _servicesState.value.spotifyTracks
+                .map { if (it.id == enriched.id) enriched else it }
+                .map { it.toAppPlayerEntity() }
                 .ifEmpty { listOf(entity) }
             playerManager.playTrack(entity, queue)
-        } else {
-            playSpotifyInAppEmbed(track)
         }
-    }
-
-    fun playSpotifyInAppEmbed(track: SpotifyTrack) {
-        if (uiState.value.isEffectivelyOffline) {
-            _snackbarEvents.tryEmit("Turn off Offline Mode to play Spotify tracks.")
-            return
-        }
-        playerManager.pause()
-        val list = _servicesState.value.spotifyTracks
-        val queue = if (list.any { it.id == track.id }) list else listOf(track) + list
-        val index = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-        _embedPlayerState.value = EmbedPlayerUiState(
-            source = EmbedPlaybackSource.SPOTIFY_EMBED,
-            spotifyTrack = track,
-            spotifyQueue = queue,
-            spotifyQueueIndex = index,
-            isPlaying = true,
-            isBuffering = false,
-            isReady = true,
-            durationMs = track.durationMs,
-            isExpanded = true,
-        )
     }
 
     fun playOnSpotifyConnect(track: SpotifyTrack) {
@@ -569,9 +504,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     spotifySelectedPlaylistName = null
                 )
             }
-            if (_embedPlayerState.value.source == EmbedPlaybackSource.SPOTIFY_EMBED) {
-                closeEmbedPlayer()
-            }
             _snackbarEvents.tryEmit("Disconnected from Spotify")
         }
     }
@@ -624,181 +556,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _snackbarEvents.tryEmit("Turn off Offline Mode to play YouTube Music.")
             return
         }
-        playerManager.pause()
-        val list = _servicesState.value.youtubeTracks
-        val queue = if (list.any { it.videoId == track.videoId }) list else listOf(track) + list
-        val index = queue.indexOfFirst { it.videoId == track.videoId }.coerceAtLeast(0)
-        _embedPlayerState.value = EmbedPlayerUiState(
-            source = EmbedPlaybackSource.YOUTUBE_MUSIC,
-            youtubeTrack = track,
-            youtubeQueue = queue,
-            youtubeQueueIndex = index,
-            isPlaying = false,
-            isBuffering = true,
-            isReady = false,
-            currentPositionMs = 0L,
-            durationMs = 0L,
-            isExpanded = true,
-            errorMessage = null,
-        )
-    }
-
-    fun onYouTubeReady() {
-        _embedPlayerState.update { it.copy(isReady = true, isBuffering = false, errorMessage = null) }
-    }
-
-    fun onYouTubeStateChanged(ytState: Int) {
-        when (ytState) {
-            1 -> _embedPlayerState.update {
-                it.copy(isPlaying = true, isBuffering = false, isReady = true, errorMessage = null)
-            }
-            2 -> _embedPlayerState.update {
-                it.copy(isPlaying = false, isBuffering = false)
-            }
-            3, -1 -> _embedPlayerState.update {
-                it.copy(isBuffering = true)
-            }
-            0 -> {
-                _embedPlayerState.update { it.copy(isPlaying = false, isBuffering = false) }
-                val state = _embedPlayerState.value
-                if (state.youtubeQueueIndex in 0 until state.youtubeQueue.lastIndex) {
-                    skipNextEmbed()
-                }
-            }
-            else -> Unit
+        viewModelScope.launch {
+            val enriched = trackStreamResolver.enrichYouTubeTrack(track)
+            val entity = enriched.toAppPlayerEntity()
+            repository.upsertTrack(entity)
+            val queue = _servicesState.value.youtubeTracks
+                .map { if (it.videoId == enriched.videoId) enriched else it }
+                .map { it.toAppPlayerEntity() }
+                .ifEmpty { listOf(entity) }
+            playerManager.playTrack(entity, queue)
         }
-    }
-
-    fun onYouTubeProgress(positionMs: Long, durationMs: Long) {
-        _embedPlayerState.update {
-            if (it.source != EmbedPlaybackSource.YOUTUBE_MUSIC) it
-            else it.copy(
-                currentPositionMs = positionMs.coerceAtLeast(0L),
-                durationMs = if (durationMs > 0L) durationMs else it.durationMs
-            )
-        }
-    }
-
-    fun onYouTubeError(errorCode: Int) {
-        val message = when (errorCode) {
-            2 -> "Invalid YouTube track ID."
-            100 -> "This track is private or unavailable."
-            101, 150, 152, 153 -> "Embedded playback was blocked for this track (code $errorCode). Some official music videos restrict in-app embedding — try another track."
-            else -> "YouTube player encountered an error ($errorCode)."
-        }
-        _embedPlayerState.update {
-            it.copy(isPlaying = false, isBuffering = false, errorMessage = message)
-        }
-        _snackbarEvents.tryEmit(message)
-    }
-
-    fun toggleEmbedPlayPause() {
-        val state = _embedPlayerState.value
-        if (!state.isActive) return
-        when (state.source) {
-            EmbedPlaybackSource.YOUTUBE_MUSIC -> {
-                if (state.isPlaying) {
-                    _embedPlayerState.update { it.copy(isPlaying = false) }
-                    _embedCommands.tryEmit(EmbedCommand.Pause)
-                } else {
-                    _embedPlayerState.update { it.copy(isPlaying = true) }
-                    _embedCommands.tryEmit(EmbedCommand.Play)
-                }
-            }
-            EmbedPlaybackSource.SPOTIFY_EMBED -> {
-                // Spotify WebView widget manages audio gestures directly; expand if collapsed so user can tap widget controls
-                _embedPlayerState.update { it.copy(isExpanded = true) }
-            }
-            null -> Unit
-        }
-    }
-
-    fun seekEmbedTo(positionMs: Long) {
-        val state = _embedPlayerState.value
-        if (state.source != EmbedPlaybackSource.YOUTUBE_MUSIC) return
-        val clamped = positionMs.coerceAtLeast(0L)
-        _embedPlayerState.update { it.copy(currentPositionMs = clamped) }
-        _embedCommands.tryEmit(EmbedCommand.SeekToSec(clamped / 1000f))
-    }
-
-    fun skipNextEmbed() {
-        val state = _embedPlayerState.value
-        when (state.source) {
-            EmbedPlaybackSource.YOUTUBE_MUSIC -> {
-                if (state.youtubeQueue.isEmpty()) return
-                val nextIdx = (state.youtubeQueueIndex + 1) % state.youtubeQueue.size
-                jumpToEmbedQueueIndex(nextIdx)
-            }
-            EmbedPlaybackSource.SPOTIFY_EMBED -> {
-                if (state.spotifyQueue.isEmpty()) return
-                val nextIdx = (state.spotifyQueueIndex + 1) % state.spotifyQueue.size
-                jumpToEmbedQueueIndex(nextIdx)
-            }
-            null -> Unit
-        }
-    }
-
-    fun skipPreviousEmbed() {
-        val state = _embedPlayerState.value
-        when (state.source) {
-            EmbedPlaybackSource.YOUTUBE_MUSIC -> {
-                if (state.youtubeQueue.isEmpty()) return
-                if (state.currentPositionMs > 3_500L) {
-                    seekEmbedTo(0L)
-                } else {
-                    val prevIdx = if (state.youtubeQueueIndex <= 0) state.youtubeQueue.lastIndex else state.youtubeQueueIndex - 1
-                    jumpToEmbedQueueIndex(prevIdx)
-                }
-            }
-            EmbedPlaybackSource.SPOTIFY_EMBED -> {
-                if (state.spotifyQueue.isEmpty()) return
-                val prevIdx = if (state.spotifyQueueIndex <= 0) state.spotifyQueue.lastIndex else state.spotifyQueueIndex - 1
-                jumpToEmbedQueueIndex(prevIdx)
-            }
-            null -> Unit
-        }
-    }
-
-    fun jumpToEmbedQueueIndex(index: Int) {
-        val state = _embedPlayerState.value
-        when (state.source) {
-            EmbedPlaybackSource.YOUTUBE_MUSIC -> {
-                val target = state.youtubeQueue.getOrNull(index) ?: return
-                _embedPlayerState.update {
-                    it.copy(
-                        youtubeTrack = target,
-                        youtubeQueueIndex = index,
-                        isPlaying = false,
-                        isBuffering = true,
-                        currentPositionMs = 0L,
-                        durationMs = 0L,
-                        errorMessage = null
-                    )
-                }
-            }
-            EmbedPlaybackSource.SPOTIFY_EMBED -> {
-                val target = state.spotifyQueue.getOrNull(index) ?: return
-                _embedPlayerState.update {
-                    it.copy(
-                        spotifyTrack = target,
-                        spotifyQueueIndex = index,
-                        durationMs = target.durationMs,
-                        errorMessage = null
-                    )
-                }
-            }
-            null -> Unit
-        }
-    }
-
-    fun setEmbedExpanded(expanded: Boolean) {
-        _embedPlayerState.update {
-            if (!it.isActive) it else it.copy(isExpanded = expanded)
-        }
-    }
-
-    fun closeEmbedPlayer() {
-        _embedPlayerState.value = EmbedPlayerUiState()
     }
 
     // --- Core Offline & Online Playback ---
@@ -830,90 +597,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // Route imported YouTube Music & Spotify tracks seamlessly to in-app embed player
-        val ytVideoId = track.youtubeVideoId
-        if (ytVideoId != null) {
-            val ytTrack = YouTubeMusicTrack(
-                videoId = ytVideoId,
-                title = track.title,
-                channelName = track.artist,
-                thumbnailUrl = track.artworkUrl
-            )
-            val ytQueue = contextQueue.mapNotNull { item ->
-                item.youtubeVideoId?.let { vid ->
-                    YouTubeMusicTrack(
-                        videoId = vid,
-                        title = item.title,
-                        channelName = item.artist,
-                        thumbnailUrl = item.artworkUrl
-                    )
-                }
-            }.ifEmpty { listOf(ytTrack) }
-            val idx = ytQueue.indexOfFirst { it.videoId == ytVideoId }.coerceAtLeast(0)
-            playerManager.pause()
-            _embedPlayerState.value = EmbedPlayerUiState(
-                source = EmbedPlaybackSource.YOUTUBE_MUSIC,
-                youtubeTrack = ytTrack,
-                youtubeQueue = ytQueue,
-                youtubeQueueIndex = idx,
-                isPlaying = false,
-                isBuffering = true,
-                isReady = false,
-                isExpanded = true,
-            )
-            return
-        }
-
-        val spTrackId = track.spotifyTrackId
-        if (spTrackId != null) {
-            val spTrack = SpotifyTrack(
-                id = spTrackId,
-                title = track.title,
-                artist = track.artist,
-                album = track.album,
-                durationMs = track.durationMs,
-                artworkUrl = track.artworkUrl,
-                previewUrl = null,
-                spotifyUri = "spotify:track:$spTrackId",
-                externalUrl = "https://open.spotify.com/track/$spTrackId"
-            )
-            val spQueue = contextQueue.mapNotNull { item ->
-                item.spotifyTrackId?.let { sid ->
-                    SpotifyTrack(
-                        id = sid,
-                        title = item.title,
-                        artist = item.artist,
-                        album = item.album,
-                        durationMs = item.durationMs,
-                        artworkUrl = item.artworkUrl,
-                        previewUrl = null,
-                        spotifyUri = "spotify:track:$sid",
-                        externalUrl = "https://open.spotify.com/track/$sid"
-                    )
-                }
-            }.ifEmpty { listOf(spTrack) }
-            val idx = spQueue.indexOfFirst { it.id == spTrackId }.coerceAtLeast(0)
-            playerManager.pause()
-            _embedPlayerState.value = EmbedPlayerUiState(
-                source = EmbedPlaybackSource.SPOTIFY_EMBED,
-                spotifyTrack = spTrack,
-                spotifyQueue = spQueue,
-                spotifyQueueIndex = idx,
-                isPlaying = true,
-                isBuffering = false,
-                isReady = true,
-                durationMs = track.durationMs,
-                isExpanded = true,
-            )
-            return
-        }
-
-        closeEmbedPlayer()
         val playableQueue = if (state.isEffectivelyOffline) {
             contextQueue.filter { it.isAvailableOffline }.ifEmpty { listOf(track) }
         } else {
-            contextQueue.filter { !it.isYouTubeInAppTrack && !it.isSpotifyEmbedTrack }
-                .ifEmpty { listOf(track) }
+            contextQueue.ifEmpty { listOf(track) }
         }
         playerManager.playTrack(track, playableQueue)
     }
@@ -930,15 +617,40 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val shuffled = candidates.shuffled()
-        val first = shuffled.first()
-        if (first.isYouTubeInAppTrack || first.isSpotifyEmbedTrack) {
-            playTrack(first, shuffled)
-            return
-        }
-        closeEmbedPlayer()
-        val media3Candidates = shuffled.filter { !it.isYouTubeInAppTrack && !it.isSpotifyEmbedTrack }
-        playerManager.setQueueAndPlay(media3Candidates, 0)
+        playerManager.setQueueAndPlay(shuffled, 0)
     }
+
+    private fun YouTubeMusicTrack.toAppPlayerEntity(): TrackEntity = TrackEntity(
+        id = "yt_$videoId",
+        title = title,
+        artist = channelName,
+        album = "YouTube Music",
+        genre = "YouTube Music",
+        durationMs = 0L,
+        sourceType = TrackSourceType.ONLINE,
+        streamUrl = "yt://$videoId",
+        artworkResKey = "studio",
+        artworkUrl = thumbnailUrl,
+        isLiveStream = false,
+        isUserAdded = true,
+        addedAt = System.currentTimeMillis()
+    )
+
+    private fun SpotifyTrack.toAppPlayerEntity(): TrackEntity = TrackEntity(
+        id = "sp_$id",
+        title = title,
+        artist = artist,
+        album = album.ifBlank { "Spotify" },
+        genre = "Spotify",
+        durationMs = durationMs,
+        sourceType = TrackSourceType.ONLINE,
+        streamUrl = "spotify://track/$id",
+        artworkResKey = "electronic",
+        artworkUrl = artworkUrl,
+        isLiveStream = false,
+        isUserAdded = true,
+        addedAt = System.currentTimeMillis()
+    )
 
     fun togglePlayPause() = playerManager.togglePlayPause()
 
@@ -1056,10 +768,28 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         playImmediately: Boolean,
     ) {
         viewModelScope.launch {
-            val track = repository.addCustomStream(title, artist, url, genre, isLive)
+            val yt = youTubeClient.parseYouTubeUrl(url)
+            val sp = spotifyClient.parseSpotifyTrackUrl(url)
+            val track = when {
+                yt != null -> {
+                    val enriched = trackStreamResolver.enrichYouTubeTrack(yt)
+                    enriched.copy(
+                        title = title.trim().ifBlank { enriched.title },
+                        channelName = artist.trim().ifBlank { enriched.channelName }
+                    ).toAppPlayerEntity()
+                }
+                sp != null -> {
+                    val enriched = trackStreamResolver.enrichSpotifyTrack(sp)
+                    enriched.copy(
+                        title = title.trim().ifBlank { enriched.title },
+                        artist = artist.trim().ifBlank { enriched.artist }
+                    ).toAppPlayerEntity()
+                }
+                else -> repository.addCustomStream(title, artist, url, genre, isLive)
+            }
+            if (yt != null || sp != null) repository.upsertTrack(track)
             _snackbarEvents.tryEmit("Added stream \"${track.title}\"")
             if (playImmediately && !uiState.value.isEffectivelyOffline) {
-                closeEmbedPlayer()
                 playerManager.playTrack(track, listOf(track) + uiState.value.onlineTracks)
             }
         }
@@ -1275,7 +1005,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.upsertTrack(entity)
         }
-        closeEmbedPlayer()
         playerManager.playTrack(entity, queueEntities)
     }
 

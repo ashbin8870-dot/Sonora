@@ -2,19 +2,25 @@ package com.example.player
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.example.MainActivity
 import com.example.R
 import com.example.SonoraApplication
+import com.example.data.remote.TrackStreamResolver
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -74,7 +80,25 @@ class PlaybackService : MediaSessionService() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
+        val app = applicationContext as SonoraApplication
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(TrackStreamResolver.EXOPLAYER_USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(25_000)
+        val upstreamFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
+        val resolvingFactory = ResolvingDataSource.Factory(upstreamFactory) { dataSpec ->
+            val uri = dataSpec.uri
+            if (uri.scheme == "yt" || uri.scheme == "spotify") {
+                val resolvedUrl = app.trackStreamResolver.resolvePlayableUrlBlocking(uri)
+                dataSpec.buildUpon().setUri(Uri.parse(resolvedUrl)).build()
+            } else {
+                dataSpec
+            }
+        }
+
         val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)

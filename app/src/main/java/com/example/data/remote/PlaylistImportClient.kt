@@ -21,6 +21,7 @@ data class ImportedPlaylistPayload(
 class PlaylistImportClient(
     private val youTubeMusicClient: YouTubeMusicClient,
     private val spotifyClient: SpotifyClient,
+    private val trackStreamResolver: TrackStreamResolver? = null,
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -65,6 +66,7 @@ class PlaylistImportClient(
                     ?: spotifyClient.fetchPublicEmbedPlaylist(spPlaylistId).getOrThrow()
 
                 if (tracks.isEmpty()) error("No tracks found in that Spotify playlist.")
+                trackStreamResolver?.rememberSpotifyTracks(tracks)
                 val finalName = customName?.trim()?.takeIf { it.isNotBlank() } ?: spTitle
                 return@runCatching ImportedPlaylistPayload(
                     name = finalName,
@@ -136,12 +138,15 @@ class PlaylistImportClient(
     fun fromSpotifyPlaylist(
         playlist: SpotifyPlaylist,
         tracks: List<SpotifyTrack>,
-    ): ImportedPlaylistPayload = ImportedPlaylistPayload(
-        name = playlist.name.ifBlank { "Spotify Playlist" },
-        description = playlist.description.ifBlank { "Imported from Spotify (${tracks.size} tracks)" },
-        coverResKey = "electronic",
-        tracks = tracks.map { it.toPlaylistTrackEntity() }
-    )
+    ): ImportedPlaylistPayload {
+        trackStreamResolver?.rememberSpotifyTracks(tracks)
+        return ImportedPlaylistPayload(
+            name = playlist.name.ifBlank { "Spotify Playlist" },
+            description = playlist.description.ifBlank { "Imported from Spotify (${tracks.size} tracks)" },
+            coverResKey = "electronic",
+            tracks = tracks.map { it.toPlaylistTrackEntity() }
+        )
+    }
 
     private fun parsePlaylistText(
         rawText: String,
