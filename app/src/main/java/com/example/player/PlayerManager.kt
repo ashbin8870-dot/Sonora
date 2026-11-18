@@ -43,6 +43,7 @@ data class PlayerUiState(
 class PlayerManager(
     private val context: Context,
     private val onTrackPlayed: (String) -> Unit,
+    private val onTrackDurationDiscovered: (String, Long) -> Unit = { _, _ -> },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -67,7 +68,12 @@ class PlayerManager(
         override fun onPlaybackStateChanged(playbackState: Int) {
             val buffering = playbackState == Player.STATE_BUFFERING
             val controller = mediaController
-            val duration = controller?.duration?.takeIf { it > 0L }
+            val exoDuration = controller?.duration?.takeIf { it > 0L }
+            val current = _uiState.value.currentTrack
+            if (current != null && exoDuration != null) {
+                maybeSyncDiscoveredDuration(current, exoDuration)
+            }
+            val duration = exoDuration
                 ?: _uiState.value.currentTrack?.durationMs
                 ?: 0L
             _uiState.update {
@@ -86,10 +92,14 @@ class PlayerManager(
             if (track != null) {
                 onTrackPlayed(track.id)
             }
-            val duration = controller.duration.takeIf { it > 0L } ?: track?.durationMs ?: 0L
+            val exoDuration = controller.duration.takeIf { it > 0L }
+            if (track != null && exoDuration != null) {
+                maybeSyncDiscoveredDuration(track, exoDuration)
+            }
+            val duration = exoDuration ?: track?.durationMs ?: 0L
             _uiState.update {
                 it.copy(
-                    currentTrack = track,
+                    currentTrack = track?.let { queueLookup[it.id] ?: it },
                     currentQueueIndex = index,
                     currentPositionMs = 0L,
                     durationMs = duration,
@@ -468,7 +478,12 @@ class PlayerManager(
                 val controller = mediaController
                 if (controller != null && controller.isPlaying) {
                     val pos = controller.currentPosition.coerceAtLeast(0L)
-                    val dur = controller.duration.takeIf { it > 0L }
+                    val exoDuration = controller.duration.takeIf { it > 0L }
+                    val currentTrack = _uiState.value.currentTrack
+                    if (currentTrack != null && exoDuration != null) {
+                        maybeSyncDiscoveredDuration(currentTrack, exoDuration)
+                    }
+                    val dur = exoDuration
                         ?: _uiState.value.currentTrack?.durationMs
                         ?: _uiState.value.durationMs
                     _uiState.update {
@@ -478,6 +493,23 @@ class PlayerManager(
                 delay(250L)
             }
         }
+    }
+
+    private fun maybeSyncDiscoveredDuration(track: TrackEntity, exoDurationMs: Long) {
+        if (track.isLiveStream || exoDurationMs <= 45_000L) return
+        val shouldUpdate = track.durationMs <= 45_000L ||
+            (track.genre.equals("Spotify", ignoreCase = true) && track.durationMs < 120_000L && exoDurationMs > 120_000L)
+        if (!shouldUpdate || kotlin.math.abs(track.durationMs - exoDurationMs) < 3_000L) return
+
+        val updated = track.copy(durationMs = exoDurationMs)
+        queueLookup[updated.id] = updated
+        _uiState.update { state ->
+            state.copy(
+                currentTrack = if (state.currentTrack?.id == updated.id) updated else state.currentTrack,
+                queue = state.queue.map { if (it.id == updated.id) updated else it }
+            )
+        }
+        onTrackDurationDiscovered(updated.id, exoDurationMs)
     }
 
     private fun stopPositionPolling() {

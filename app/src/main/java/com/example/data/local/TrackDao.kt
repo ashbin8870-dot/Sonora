@@ -58,6 +58,9 @@ interface TrackDao {
         sourceType: TrackSourceType,
     )
 
+    @Query("UPDATE tracks SET durationMs = :durationMs WHERE id = :id")
+    suspend fun updateDuration(id: String, durationMs: Long)
+
     @Query("DELETE FROM tracks WHERE id = :id")
     suspend fun deleteById(id: String)
 }

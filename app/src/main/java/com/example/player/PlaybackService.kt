@@ -10,7 +10,6 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -81,17 +80,20 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         val app = applicationContext as SonoraApplication
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(TrackStreamResolver.EXOPLAYER_USER_AGENT)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(25_000)
-        val upstreamFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
+        val okHttpDataSourceFactory = OkHttpStreamDataSource.Factory(
+            client = app.trackStreamResolver.streamHttpClient,
+            defaultUserAgent = TrackStreamResolver.EXOPLAYER_USER_AGENT
+        )
+        val upstreamFactory = DefaultDataSource.Factory(this, okHttpDataSourceFactory)
         val resolvingFactory = ResolvingDataSource.Factory(upstreamFactory) { dataSpec ->
             val uri = dataSpec.uri
             if (uri.scheme == "yt" || uri.scheme == "spotify") {
-                val resolvedUrl = app.trackStreamResolver.resolvePlayableUrlBlocking(uri)
-                dataSpec.buildUpon().setUri(Uri.parse(resolvedUrl)).build()
+                val resolved = app.trackStreamResolver.resolvePlayableStreamBlocking(uri)
+                val builder = dataSpec.buildUpon().setUri(Uri.parse(resolved.url))
+                if (resolved.headers.isNotEmpty()) {
+                    builder.setHttpRequestHeaders(resolved.headers)
+                }
+                builder.build()
             } else {
                 dataSpec
             }
@@ -134,17 +136,24 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val player = mediaSession?.player
-        if (player == null || !player.playWhenReady || player.mediaItemCount == 0 ||
-            player.playbackState == Player.STATE_ENDED
-        ) {
-            stopSelf()
+        mediaSession?.player?.let { player ->
+            player.playWhenReady = false
+            player.pause()
+            player.stop()
+            player.clearMediaItems()
         }
+        @Suppress("DEPRECATION")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
         serviceScope.cancel()
+        @Suppress("DEPRECATION")
+        stopForeground(STOP_FOREGROUND_REMOVE)
         mediaSession?.run {
+            player.stop()
             player.release()
             release()
             mediaSession = null

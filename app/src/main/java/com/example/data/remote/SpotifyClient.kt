@@ -9,7 +9,12 @@ import com.example.data.local.PreferencesRepository
 import com.example.data.model.TrackEntity
 import com.example.data.model.TrackSourceType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -408,7 +413,7 @@ class SpotifyClient(
                 ?.get("url")?.jsonPrimitive?.contentOrNull
 
             val trackList = entity["trackList"]?.jsonArray.orEmpty()
-            val tracks = trackList.mapNotNull { el ->
+            val rawTracks = trackList.mapNotNull { el ->
                 val obj = el.jsonObject
                 val uri = obj["uri"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 val trackId = uri.removePrefix("spotify:track:")
@@ -419,9 +424,18 @@ class SpotifyClient(
                     ?: return@mapNotNull null
                 val artist = obj["subtitle"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
                     ?: "Spotify Artist"
-                val durationMs = obj["duration"]?.jsonPrimitive?.longOrNull ?: 0L
+                val rawDuration = obj["duration"]?.jsonPrimitive?.longOrNull
+                    ?: obj["duration_ms"]?.jsonPrimitive?.longOrNull
+                    ?: obj["durationMs"]?.jsonPrimitive?.longOrNull
+                    ?: 0L
+                val durationMs = if (rawDuration in 1L..9_999L) rawDuration * 1000L else rawDuration
                 val previewUrl = obj["audioPreview"]?.jsonObject
                     ?.get("url")?.jsonPrimitive?.contentOrNull
+                val trackCover = obj["coverArt"]?.jsonObject
+                    ?.get("sources")?.jsonArray
+                    ?.firstOrNull()?.jsonObject
+                    ?.get("url")?.jsonPrimitive?.contentOrNull
+                    ?: coverArtUrl
 
                 SpotifyTrack(
                     id = trackId,
@@ -429,19 +443,193 @@ class SpotifyClient(
                     artist = artist,
                     album = playlistTitle,
                     durationMs = durationMs,
-                    artworkUrl = coverArtUrl,
+                    artworkUrl = trackCover,
                     previewUrl = previewUrl,
                     spotifyUri = "spotify:track:$trackId",
                     externalUrl = "https://open.spotify.com/track/$trackId"
                 )
             }
 
-            if (tracks.isEmpty()) {
+            if (rawTracks.isEmpty()) {
                 error("No tracks found in that Spotify playlist.")
             }
 
+            // Enrich any tracks whose embed duration is missing or capped below 2 minutes
+            val tracks = enrichShortEmbedDurations(rawTracks)
+
             Triple(playlistTitle, subtitle, tracks)
         }
+    }
+
+    private suspend fun enrichShortEmbedDurations(
+        tracks: List<SpotifyTrack>,
+    ): List<SpotifyTrack> = coroutineScope {
+        val semaphore = Semaphore(6)
+        tracks.mapIndexed { index, track ->
+            if (track.durationMs > 120_000L || index >= 60) {
+                async { track }
+            } else {
+                async {
+                    semaphore.withPermit {
+                        val fullMs = resolveFullDurationMs(
+                            trackId = track.id,
+                            title = track.title,
+                            artist = track.artist,
+                            currentMs = track.durationMs
+                        )
+                        if (fullMs > track.durationMs) track.copy(durationMs = fullMs) else track
+                    }
+                }
+            }
+        }.awaitAll()
+    }
+
+    fun resolveFullDurationMs(
+        trackId: String? = null,
+        title: String,
+        artist: String,
+        currentMs: Long = 0L,
+    ): Long {
+        if (currentMs > 120_000L) return currentMs
+        val cleanTitle = cleanDurationLookupTitle(title)
+        val cleanArtist = artist.substringBefore(",").trim()
+        if (cleanTitle.isBlank()) return currentMs
+
+        // 1. Check track's own Spotify embed page if duration was missing or preview-capped
+        if (!trackId.isNullOrBlank() && currentMs <= 45_000L) {
+            fetchTrackEmbedDurationMs(trackId)?.let { embedDur ->
+                if (embedDur > 120_000L) return embedDur
+            }
+        }
+
+        val query = listOf(cleanArtist, cleanTitle).filter { it.isNotBlank() }.joinToString(" ")
+        var bestMs = currentMs
+
+        // 2. iTunes Search full track duration (trackTimeMillis)
+        runCatching {
+            val req = Request.Builder()
+                .url("https://itunes.apple.com/search?term=${Uri.encode(query)}&media=music&entity=song&limit=5")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                    val results = root["results"]?.jsonArray.orEmpty()
+                    for (item in results) {
+                        val obj = item.jsonObject
+                        val candTitle = obj["trackName"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val candArtist = obj["artistName"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val durMs = obj["trackTimeMillis"]?.jsonPrimitive?.longOrNull ?: 0L
+                        if (durMs > 45_000L && isTrackMatch(cleanTitle, cleanArtist, candTitle, candArtist)) {
+                            if (currentMs <= 45_000L || durMs > currentMs + 10_000L) {
+                                return durMs
+                            }
+                            if (durMs > bestMs) bestMs = durMs
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Deezer Search full track duration (duration in seconds)
+        runCatching {
+            val req = Request.Builder()
+                .url("https://api.deezer.com/search?q=${Uri.encode(query)}&limit=5")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                    val data = root["data"]?.jsonArray.orEmpty()
+                    for (item in data) {
+                        val obj = item.jsonObject
+                        val candTitle = obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val candArtist = obj["artist"]?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val durSec = obj["duration"]?.jsonPrimitive?.longOrNull ?: 0L
+                        val durMs = durSec * 1000L
+                        if (durMs > 45_000L && isTrackMatch(cleanTitle, cleanArtist, candTitle, candArtist)) {
+                            if (currentMs <= 45_000L || durMs > currentMs + 10_000L) {
+                                return durMs
+                            }
+                            if (durMs > bestMs) bestMs = durMs
+                        }
+                    }
+                }
+            }
+        }
+
+        return bestMs
+    }
+
+    private fun fetchTrackEmbedDurationMs(trackId: String): Long? {
+        return runCatching {
+            val req = Request.Builder()
+                .url("https://open.spotify.com/embed/track/${Uri.encode(trackId)}")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                )
+                .build()
+            val html = client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                resp.body?.string().orEmpty()
+            }
+            val marker = "<script id=\"__NEXT_DATA__\" type=\"application/json\">"
+            val start = html.indexOf(marker)
+            if (start < 0) return null
+            val jsonStart = start + marker.length
+            val jsonEnd = html.indexOf("</script>", jsonStart)
+            if (jsonEnd < 0) return null
+            val root = json.parseToJsonElement(html.substring(jsonStart, jsonEnd)).jsonObject
+            val entity = root["props"]?.jsonObject
+                ?.get("pageProps")?.jsonObject
+                ?.get("state")?.jsonObject
+                ?.get("data")?.jsonObject
+                ?.get("entity")?.jsonObject
+                ?: return null
+            val raw = entity["duration"]?.jsonPrimitive?.longOrNull ?: return null
+            if (raw in 1L..9_999L) raw * 1000L else raw
+        }.getOrNull()
+    }
+
+    private fun cleanDurationLookupTitle(title: String): String {
+        return title
+            .replace(Regex("\\s*[(\\[]\\s*(feat\\.|ft\\.|with).*?[)\\]]", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s+-\\s+(remastered|single|radio edit|deluxe|bonus).*$", RegexOption.IGNORE_CASE), "")
+            .trim()
+    }
+
+    private fun normalizeMetaToken(value: String): String {
+        return value.lowercase()
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun isTrackMatch(
+        targetTitle: String,
+        targetArtist: String,
+        candTitle: String,
+        candArtist: String,
+    ): Boolean {
+        val normTargetTitle = normalizeMetaToken(cleanDurationLookupTitle(targetTitle))
+        val normCandTitle = normalizeMetaToken(cleanDurationLookupTitle(candTitle))
+        if (normTargetTitle.isBlank() || normCandTitle.isBlank()) return false
+
+        val titleMatched = normCandTitle == normTargetTitle ||
+            normCandTitle.contains(normTargetTitle) ||
+            normTargetTitle.contains(normCandTitle)
+        if (!titleMatched) return false
+
+        val normTargetArtist = normalizeMetaToken(targetArtist)
+        val normCandArtist = normalizeMetaToken(candArtist)
+        if (normTargetArtist.isBlank() ||
+            normTargetArtist == "spotify artist" ||
+            normTargetArtist == "spotify stream"
+        ) {
+            return true
+        }
+        return normCandArtist.contains(normTargetArtist) ||
+            normTargetArtist.contains(normCandArtist) ||
+            normTargetArtist.split(" ").any { token -> token.length >= 3 && normCandArtist.contains(token) }
     }
 
     suspend fun searchTracks(

@@ -44,7 +44,8 @@ class SonoraApplication : Application() {
         MusicRepository(
             context = this,
             trackDao = database.trackDao(),
-            playlistDao = database.playlistDao()
+            playlistDao = database.playlistDao(),
+            streamResolver = { uri -> trackStreamResolver.resolvePlayableStreamBlocking(uri) }
         )
     }
 
@@ -55,6 +56,11 @@ class SonoraApplication : Application() {
                 appScope.launch {
                     musicRepository.markPlayed(trackId)
                     preferencesRepository.setLastPlayedTrackId(trackId)
+                }
+            },
+            onTrackDurationDiscovered = { trackId, durationMs ->
+                appScope.launch {
+                    runCatching { database.trackDao().updateDuration(trackId, durationMs) }
                 }
             }
         )

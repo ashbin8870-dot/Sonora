@@ -14,6 +14,7 @@ import com.example.data.model.PlaylistTrackCrossRef
 import com.example.data.model.PlaylistWithTracks
 import com.example.data.model.TrackEntity
 import com.example.data.model.TrackSourceType
+import com.example.data.remote.ResolvedAudioStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,6 +36,7 @@ class MusicRepository(
     private val context: Context,
     private val trackDao: TrackDao,
     private val playlistDao: PlaylistDao,
+    private val streamResolver: ((Uri) -> ResolvedAudioStream)? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -216,8 +218,15 @@ class MusicRepository(
             val tempFile = File(offlineAudioDir, "${track.id}.tmp")
 
             val result = runCatching {
-                val request = Request.Builder().url(url).build()
-                okHttpClient.newCall(request).execute().use { response ->
+                val resolved = if (url.startsWith("yt://") || url.startsWith("spotify://")) {
+                    streamResolver?.invoke(Uri.parse(url))
+                        ?: error("Stream resolver unavailable")
+                } else {
+                    ResolvedAudioStream(url)
+                }
+                val requestBuilder = Request.Builder().url(resolved.url)
+                resolved.headers.forEach { (k, v) -> requestBuilder.header(k, v) }
+                okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
                     if (!response.isSuccessful) error("HTTP ${response.code}")
                     val body = response.body ?: error("Empty response body")
                     val totalBytes = body.contentLength()

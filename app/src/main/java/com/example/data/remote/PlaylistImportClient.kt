@@ -322,7 +322,7 @@ class PlaylistImportClient(
         artist = channelName,
         album = "YouTube Music",
         genre = "YouTube Music",
-        durationMs = 0L,
+        durationMs = durationMs,
         sourceType = TrackSourceType.ONLINE,
         streamUrl = "yt://$videoId",
         artworkResKey = "studio",

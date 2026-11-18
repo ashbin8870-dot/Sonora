@@ -14,6 +14,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.xmlpull.v1.XmlPullParser
@@ -94,6 +95,7 @@ data class YouTubeMusicTrack(
     val title: String,
     val channelName: String,
     val thumbnailUrl: String?,
+    val durationMs: Long = 0L,
 ) {
     fun buildIframePlayerHtml(originUrl: String): String {
         val encodedOrigin = Uri.encode(originUrl)
@@ -223,21 +225,23 @@ class YouTubeMusicClient {
                     }
                 }
 
-                // Try public Atom XML feed (works for PL... playlists without API key)
-                val xmlResult = runCatching {
-                    val feedUrl = "https://www.youtube.com/feeds/videos.xml?playlist_id=${Uri.encode(cleanId)}"
-                    val xml = client.newCall(Request.Builder().url(feedUrl).build()).execute().use { resp ->
-                        if (!resp.isSuccessful) error("Atom feed HTTP ${resp.code}")
-                        resp.body?.string().orEmpty()
-                    }
-                    parseAtomPlaylistFeed(xml)
-                }.getOrNull()
-                if (xmlResult != null && xmlResult.second.isNotEmpty()) {
-                    return@runCatching xmlResult
+                // Public YouTube playlist page ytInitialData (supports up to 100 tracks + durations + OLAK5uy_/Mixes)
+                val webResult = runCatching { fetchPlaylistFromWebPage(cleanId) }.getOrNull()
+                if (webResult != null && webResult.second.isNotEmpty()) {
+                    return@runCatching webResult
                 }
 
-                // Fallback: public YouTube playlist page ytInitialData (works for OLAK5uy_, PL, mixes)
-                fetchPlaylistFromWebPage(cleanId)
+                // Fallback: public Atom XML feed (works for PL... playlists)
+                val feedUrl = "https://www.youtube.com/feeds/videos.xml?playlist_id=${Uri.encode(cleanId)}"
+                val xml = client.newCall(Request.Builder().url(feedUrl).build()).execute().use { resp ->
+                    if (!resp.isSuccessful) error("Could not load YouTube playlist (${resp.code})")
+                    resp.body?.string().orEmpty()
+                }
+                val parsedFeed = parseAtomPlaylistFeed(xml)
+                if (parsedFeed.second.isEmpty()) {
+                    error("No playable tracks found in that YouTube playlist.")
+                }
+                parsedFeed
             }
         }
 
@@ -359,12 +363,18 @@ class YouTubeMusicClient {
     ) {
         when (element) {
             is JsonObject -> {
-                val renderer = element["playlistVideoRenderer"] as? JsonObject
+                val renderer = (element["playlistVideoRenderer"] as? JsonObject)
+                    ?: (element["playlistPanelVideoRenderer"] as? JsonObject)
                 if (renderer != null) {
                     val videoId = renderer["videoId"]?.jsonPrimitive?.contentOrNull
                         ?.takeIf { it.isNotBlank() }
                     val title = extractYtText(renderer["title"])
-                    if (videoId != null && !title.isNullOrBlank() && seenIds.add(videoId)) {
+                    val isUnavailable = title.isNullOrBlank() ||
+                        title.equals("[Deleted video]", ignoreCase = true) ||
+                        title.equals("[Private video]", ignoreCase = true) ||
+                        title.equals("Deleted video", ignoreCase = true) ||
+                        title.equals("Private video", ignoreCase = true)
+                    if (videoId != null && !isUnavailable && seenIds.add(videoId)) {
                         val channel = extractYtText(renderer["shortBylineText"])
                             ?: extractYtText(renderer["longBylineText"])
                             ?: "YouTube Music"
@@ -373,12 +383,21 @@ class YouTubeMusicClient {
                             ?.lastOrNull()?.jsonObject
                             ?.get("url")?.jsonPrimitive?.contentOrNull
                             ?: "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                        val lengthSeconds = renderer["lengthSeconds"]?.jsonPrimitive?.contentOrNull
+                            ?.toLongOrNull()
+                            ?: renderer["lengthSeconds"]?.jsonPrimitive?.longOrNull
+                        val durationMs = if (lengthSeconds != null && lengthSeconds > 0L) {
+                            lengthSeconds * 1000L
+                        } else {
+                            parseDurationTextMs(extractYtText(renderer["lengthText"]))
+                        }
                         out.add(
                             YouTubeMusicTrack(
                                 videoId = videoId,
-                                title = decodeHtmlEntities(title),
+                                title = decodeHtmlEntities(title!!),
                                 channelName = decodeHtmlEntities(channel),
-                                thumbnailUrl = thumb
+                                thumbnailUrl = thumb,
+                                durationMs = durationMs
                             )
                         )
                     }
@@ -394,6 +413,16 @@ class YouTubeMusicClient {
                 }
             }
             else -> Unit
+        }
+    }
+
+    private fun parseDurationTextMs(text: String?): Long {
+        if (text.isNullOrBlank()) return 0L
+        val parts = text.trim().split(':').mapNotNull { it.toLongOrNull() }
+        return when (parts.size) {
+            2 -> (parts[0] * 60 + parts[1]) * 1000L
+            3 -> (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000L
+            else -> 0L
         }
     }
 
