@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,10 +24,12 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -35,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -53,6 +57,7 @@ import com.example.data.model.PlaylistWithTracks
 import com.example.data.model.TrackEntity
 import com.example.player.PlayerUiState
 import com.example.ui.components.ArtworkImage
+import com.example.ui.components.ImportPlaylistSourceTab
 import com.example.ui.components.SourcePill
 import com.example.ui.components.TrackRow
 import com.example.ui.theme.EmeraldOffline
@@ -64,7 +69,7 @@ fun PlaylistsScreen(
     isImportingPlaylist: Boolean,
     onOpenPlaylist: (Long) -> Unit,
     onCreatePlaylistClick: () -> Unit,
-    onImportPlaylistClick: () -> Unit,
+    onImportWithSourceTab: (ImportPlaylistSourceTab) -> Unit,
     onDeletePlaylist: (Long, String) -> Unit,
     onPlayPlaylist: (PlaylistWithTracks) -> Unit,
     bottomContentPadding: PaddingValues,
@@ -85,25 +90,79 @@ fun PlaylistsScreen(
                     .padding(horizontal = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "Playlists",
-                    style = MaterialTheme.typography.headlineMedium
-                )
-                Text(
-                    text = "Import YouTube, Spotify, M3U/PLS, or local files",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    FilledTonalButton(
-                        onClick = onImportPlaylistClick,
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Playlists",
+                            style = MaterialTheme.typography.headlineMedium
+                        )
+                        Text(
+                            text = "Import YouTube Music, Spotify, M3U/PLS, or local files",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = onCreatePlaylistClick,
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("import_playlist_button")
+                        modifier = Modifier.testTag("new_playlist_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("New")
+                    }
+                }
+            }
+        }
+
+        item {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    FilledTonalButton(
+                        onClick = { onImportWithSourceTab(ImportPlaylistSourceTab.YOUTUBE_MUSIC) },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("import_youtube_playlist_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.SmartDisplay,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("YouTube Music")
+                    }
+                }
+                item {
+                    FilledTonalButton(
+                        onClick = { onImportWithSourceTab(ImportPlaylistSourceTab.SPOTIFY) },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("import_spotify_playlist_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Spotify")
+                    }
+                }
+                item {
+                    OutlinedButton(
+                        onClick = { onImportWithSourceTab(ImportPlaylistSourceTab.FILE_AND_LOCAL) },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("import_playlist_button")
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.FileDownload,
@@ -111,22 +170,7 @@ fun PlaylistsScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(Modifier.width(6.dp))
-                        Text("Import Playlist")
-                    }
-                    Button(
-                        onClick = onCreatePlaylistClick,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("new_playlist_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("New Playlist")
+                        Text("M3U / Files")
                     }
                 }
             }
@@ -175,15 +219,15 @@ fun PlaylistsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        FilledTonalButton(onClick = onImportPlaylistClick) {
-                            Icon(Icons.Rounded.FileDownload, contentDescription = null)
+                        FilledTonalButton(onClick = { onImportWithSourceTab(ImportPlaylistSourceTab.YOUTUBE_MUSIC) }) {
+                            Icon(Icons.Rounded.SmartDisplay, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
-                            Text("Import")
+                            Text("YT Music")
                         }
-                        Button(onClick = onCreatePlaylistClick) {
-                            Icon(Icons.Rounded.Add, contentDescription = null)
+                        FilledTonalButton(onClick = { onImportWithSourceTab(ImportPlaylistSourceTab.SPOTIFY) }) {
+                            Icon(Icons.Rounded.GraphicEq, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
-                            Text("Create")
+                            Text("Spotify")
                         }
                     }
                 }

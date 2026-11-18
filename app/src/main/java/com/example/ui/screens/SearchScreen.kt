@@ -524,7 +524,7 @@ private fun GlobalTrackRow(
         IconButton(onClick = onPlayClick) {
             Icon(
                 imageVector = Icons.Rounded.PlayCircle,
-                contentDescription = "Play in Sonora",
+                contentDescription = "Play in RinMusic",
                 tint = MaterialTheme.colorScheme.primary
             )
         }

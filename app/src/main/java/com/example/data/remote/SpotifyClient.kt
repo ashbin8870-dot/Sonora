@@ -14,6 +14,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -352,6 +357,93 @@ class SpotifyClient(
         }
     }
 
+    suspend fun fetchPublicEmbedPlaylist(
+        playlistId: String,
+    ): Result<Triple<String, String, List<SpotifyTrack>>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanId = playlistId.trim()
+            require(cleanId.isNotBlank()) { "Invalid Spotify playlist ID" }
+            val url = "https://open.spotify.com/embed/playlist/${Uri.encode(cleanId)}"
+            val request = Request.Builder()
+                .url(url)
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                )
+                .build()
+
+            val html = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    error("Could not load Spotify playlist (${response.code})")
+                }
+                response.body?.string().orEmpty()
+            }
+
+            val marker = "<script id=\"__NEXT_DATA__\" type=\"application/json\">"
+            val start = html.indexOf(marker)
+            if (start < 0) {
+                error("Spotify playlist metadata not found. Ensure the playlist is public or connect Spotify.")
+            }
+            val jsonStart = start + marker.length
+            val jsonEnd = html.indexOf("</script>", jsonStart)
+            if (jsonEnd < 0) error("Incomplete Spotify playlist data.")
+            val rawJson = html.substring(jsonStart, jsonEnd)
+
+            val root = json.parseToJsonElement(rawJson).jsonObject
+            val entity = root["props"]?.jsonObject
+                ?.get("pageProps")?.jsonObject
+                ?.get("state")?.jsonObject
+                ?.get("data")?.jsonObject
+                ?.get("entity")?.jsonObject
+                ?: error("Could not read Spotify playlist details. Is the playlist public?")
+
+            val playlistTitle = entity["title"]?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?: entity["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                ?: "Spotify Playlist"
+            val subtitle = entity["subtitle"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val coverArtUrl = entity["coverArt"]?.jsonObject
+                ?.get("sources")?.jsonArray
+                ?.firstOrNull()?.jsonObject
+                ?.get("url")?.jsonPrimitive?.contentOrNull
+
+            val trackList = entity["trackList"]?.jsonArray.orEmpty()
+            val tracks = trackList.mapNotNull { el ->
+                val obj = el.jsonObject
+                val uri = obj["uri"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val trackId = uri.removePrefix("spotify:track:")
+                    .takeIf { it.isNotBlank() && uri.startsWith("spotify:track:") }
+                    ?: obj["uid"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val title = obj["title"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val artist = obj["subtitle"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: "Spotify Artist"
+                val durationMs = obj["duration"]?.jsonPrimitive?.longOrNull ?: 0L
+                val previewUrl = obj["audioPreview"]?.jsonObject
+                    ?.get("url")?.jsonPrimitive?.contentOrNull
+
+                SpotifyTrack(
+                    id = trackId,
+                    title = title,
+                    artist = artist,
+                    album = playlistTitle,
+                    durationMs = durationMs,
+                    artworkUrl = coverArtUrl,
+                    previewUrl = previewUrl,
+                    spotifyUri = "spotify:track:$trackId",
+                    externalUrl = "https://open.spotify.com/track/$trackId"
+                )
+            }
+
+            if (tracks.isEmpty()) {
+                error("No tracks found in that Spotify playlist.")
+            }
+
+            Triple(playlistTitle, subtitle, tracks)
+        }
+    }
+
     suspend fun searchTracks(
         query: String,
         market: String? = null,
@@ -449,8 +541,8 @@ class SpotifyClient(
         return when {
             trimmed.startsWith("spotify:playlist:") ->
                 trimmed.removePrefix("spotify:playlist:").substringBefore('?')
-            trimmed.contains("open.spotify.com/playlist/") ->
-                trimmed.substringAfter("open.spotify.com/playlist/").substringBefore('?').substringBefore('/')
+            trimmed.contains("/playlist/") ->
+                trimmed.substringAfter("/playlist/").substringBefore('?').substringBefore('/')
             else -> null
         }?.takeIf { it.isNotBlank() }
     }

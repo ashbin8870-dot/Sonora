@@ -420,7 +420,7 @@ fun EmbedNowPlayingOverlay(
                 }
             } else {
                 Text(
-                    text = "Playing directly inside Sonora via Spotify Web Player — minimize anytime to keep listening across tabs.",
+                    text = "Playing directly inside RinMusic via Spotify Web Player — minimize anytime to keep listening across tabs.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -513,7 +513,7 @@ fun EmbedNowPlayingOverlay(
 
             // Queue section
             Text(
-                text = "Up Next in Sonora",
+                text = "Up Next in RinMusic",
                 style = MaterialTheme.typography.titleMedium
             )
 

@@ -98,7 +98,7 @@ fun DiscoverScreen(
             ) {
                 Column {
                     Text(
-                        text = "SONORA",
+                        text = "RINMUSIC",
                         style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onBackground
                     )
@@ -152,7 +152,7 @@ fun DiscoverScreen(
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.hero_studio_1794941431881),
-                    contentDescription = "Sonora Studio Vinyl Banner",
+                    contentDescription = "RinMusic Studio Vinyl Banner",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )

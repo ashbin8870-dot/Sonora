@@ -1179,6 +1179,41 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun importSpotifyPlaylistByAccount(
+        playlist: SpotifyPlaylist,
+        onSuccess: (Long) -> Unit = {},
+    ) {
+        if (uiState.value.isEffectivelyOffline) {
+            _snackbarEvents.tryEmit("Turn off Offline Mode to import a Spotify playlist.")
+            return
+        }
+        viewModelScope.launch {
+            _isImportingPlaylist.value = true
+            spotifyClient.fetchPlaylistTracks(playlist.id)
+                .onSuccess { tracks ->
+                    if (tracks.isEmpty()) {
+                        _isImportingPlaylist.value = false
+                        _snackbarEvents.tryEmit("No tracks found in \"${playlist.name}\".")
+                        return@onSuccess
+                    }
+                    val payload = playlistImportClient.fromSpotifyPlaylist(playlist, tracks)
+                    val id = repository.importPlaylistWithTracks(
+                        name = payload.name,
+                        description = payload.description,
+                        coverResKey = payload.coverResKey,
+                        tracks = payload.tracks
+                    )
+                    _isImportingPlaylist.value = false
+                    _snackbarEvents.tryEmit("Imported \"${payload.name}\" (${payload.tracks.size} tracks)")
+                    onSuccess(id)
+                }
+                .onFailure { err ->
+                    _isImportingPlaylist.value = false
+                    _snackbarEvents.tryEmit(err.message ?: "Failed to import Spotify playlist")
+                }
+        }
+    }
+
     // --- All-Countries Global Music Search ---
 
     fun selectSearchCountry(countryCode: String) {

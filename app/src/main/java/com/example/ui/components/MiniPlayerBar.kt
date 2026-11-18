@@ -475,7 +475,7 @@ private fun IdleMiniPlayerContent(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
-                    text = "Sonora Player Ready",
+                    text = "RinMusic Player Ready",
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis

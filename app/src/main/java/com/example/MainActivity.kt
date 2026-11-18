@@ -28,12 +28,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.QueueMusic
@@ -86,6 +84,7 @@ import com.example.ui.components.CountryPickerSheet
 import com.example.ui.components.CreatePlaylistDialog
 import com.example.ui.components.EmbedNowPlayingOverlay
 import com.example.ui.components.ImportPlaylistDialog
+import com.example.ui.components.ImportPlaylistSourceTab
 import com.example.ui.components.MiniPlayerBar
 import com.example.ui.components.NowPlayingSheet
 import com.example.ui.components.PersistentEmbedWebView
@@ -94,13 +93,11 @@ import com.example.ui.navigation.LibraryRoute
 import com.example.ui.navigation.PlaylistDetailRoute
 import com.example.ui.navigation.PlaylistsRoute
 import com.example.ui.navigation.SearchRoute
-import com.example.ui.navigation.ServicesRoute
 import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.PlaylistDetailScreen
 import com.example.ui.screens.PlaylistsScreen
 import com.example.ui.screens.SearchScreen
-import com.example.ui.screens.ServicesScreen
 import com.example.ui.theme.SonoraTheme
 import com.example.ui.viewmodel.MusicViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -194,6 +191,7 @@ fun SonoraRoot(
     var showAddStreamDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var showImportPlaylistDialog by remember { mutableStateOf(false) }
+    var importDialogSourceTab by remember { mutableStateOf(ImportPlaylistSourceTab.YOUTUBE_MUSIC) }
     var showCountryPickerSheet by remember { mutableStateOf(false) }
     var pendingPlaylistCustomName by remember { mutableStateOf("") }
     var trackForPlaylistSheet by remember { mutableStateOf<TrackEntity?>(null) }
@@ -288,13 +286,6 @@ fun SonoraRoot(
                 tag = "nav_library"
             ),
             TopLevelDestination(
-                route = ServicesRoute,
-                labelRes = R.string.nav_services,
-                selectedIcon = Icons.Rounded.CloudQueue,
-                unselectedIcon = Icons.Outlined.CloudQueue,
-                tag = "nav_services"
-            ),
-            TopLevelDestination(
                 route = PlaylistsRoute,
                 labelRes = R.string.nav_playlists,
                 selectedIcon = Icons.Rounded.QueueMusic,
@@ -360,7 +351,6 @@ fun SonoraRoot(
                                         val selected = when (dest.route) {
                                             DiscoverRoute -> currentDestination?.hasRoute<DiscoverRoute>() == true
                                             LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
-                                            ServicesRoute -> currentDestination?.hasRoute<ServicesRoute>() == true
                                             PlaylistsRoute -> currentDestination?.hasRoute<PlaylistsRoute>() == true ||
                                                 currentDestination?.hasRoute<PlaylistDetailRoute>() == true
                                             SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
@@ -398,7 +388,6 @@ fun SonoraRoot(
                                     val selected = when (dest.route) {
                                         DiscoverRoute -> currentDestination?.hasRoute<DiscoverRoute>() == true
                                         LibraryRoute -> currentDestination?.hasRoute<LibraryRoute>() == true
-                                        ServicesRoute -> currentDestination?.hasRoute<ServicesRoute>() == true
                                         PlaylistsRoute -> currentDestination?.hasRoute<PlaylistsRoute>() == true ||
                                             currentDestination?.hasRoute<PlaylistDetailRoute>() == true
                                         SearchRoute -> currentDestination?.hasRoute<SearchRoute>() == true
@@ -473,44 +462,16 @@ fun SonoraRoot(
                                     )
                                 }
 
-                                composable<ServicesRoute> {
-                                    ServicesScreen(
-                                        homeState = uiState,
-                                        servicesState = servicesState,
-                                        embedState = embedState,
-                                        activeMedia3TrackId = playerState.currentTrack?.id,
-                                        onToggleOfflineMode = { viewModel.toggleOfflineOnlyMode() },
-                                        onSelectService = { viewModel.selectStreamingService(it) },
-                                        onConnectSpotify = { viewModel.startSpotifySignIn(context) },
-                                        onDisconnectSpotify = { viewModel.disconnectSpotify() },
-                                        onRefreshSpotify = { viewModel.refreshSpotifyData() },
-                                        onSelectSpotifyPlaylist = { viewModel.selectSpotifyPlaylist(it) },
-                                        onImportSelectedSpotifyPlaylist = { viewModel.importSelectedSpotifyPlaylistToSonora() },
-                                        onSpotifyQueryChange = { viewModel.updateSpotifySearchQuery(it) },
-                                        onSearchSpotify = { viewModel.searchSpotifyTracks() },
-                                        onSpotifyDirectUrlChange = { viewModel.updateSpotifyDirectUrl(it) },
-                                        onPlaySpotifyDirectUrl = { viewModel.playSpotifyDirectUrl() },
-                                        onPlaySpotifyTrack = { viewModel.playSpotifyTrack(it) },
-                                        onPlaySpotifyInAppEmbed = { viewModel.playSpotifyInAppEmbed(it) },
-                                        onPlaySpotifyConnect = { viewModel.playOnSpotifyConnect(it) },
-                                        onToggleSpotifyConnectPlayPause = { viewModel.toggleSpotifyConnectPlayPause() },
-                                        onNextSpotifyConnect = { viewModel.nextOnSpotifyConnect() },
-                                        onYouTubeQueryChange = { viewModel.updateYouTubeSearchQuery(it) },
-                                        onSearchYouTube = { viewModel.searchYouTubeMusic(it) },
-                                        onYouTubeDirectUrlChange = { viewModel.updateYouTubeDirectUrl(it) },
-                                        onPlayYouTubeDirectUrl = { viewModel.playYouTubeDirectUrl() },
-                                        onPlayYouTubeTrack = { viewModel.playYouTubeMusicTrack(it) },
-                                        bottomContentPadding = contentBottomPad
-                                    )
-                                }
-
                                 composable<PlaylistsRoute> {
                                     PlaylistsScreen(
                                         playlists = uiState.playlists,
                                         isImportingPlaylist = isImportingPlaylist,
                                         onOpenPlaylist = { id -> navController.navigate(PlaylistDetailRoute(id)) },
                                         onCreatePlaylistClick = { showCreatePlaylistDialog = true },
-                                        onImportPlaylistClick = { showImportPlaylistDialog = true },
+                                        onImportWithSourceTab = { sourceTab ->
+                                            importDialogSourceTab = sourceTab
+                                            showImportPlaylistDialog = true
+                                        },
                                         onDeletePlaylist = { id, name -> viewModel.deletePlaylist(id, name) },
                                         onPlayPlaylist = { pl ->
                                             pl.tracks.firstOrNull()?.let { first ->
@@ -682,6 +643,16 @@ fun SonoraRoot(
 
                 if (showImportPlaylistDialog) {
                     ImportPlaylistDialog(
+                        initialTab = importDialogSourceTab,
+                        spotifyConfigured = servicesState.spotifyConfigured,
+                        spotifySignedIn = servicesState.spotifySignedIn,
+                        spotifyPlaylists = servicesState.spotifyPlaylists,
+                        onConnectSpotify = { viewModel.startSpotifySignIn(context) },
+                        onImportSpotifyAccountPlaylist = { spPlaylist ->
+                            viewModel.importSpotifyPlaylistByAccount(spPlaylist) { importedId ->
+                                navController.navigate(PlaylistDetailRoute(importedId))
+                            }
+                        },
                         onDismiss = { showImportPlaylistDialog = false },
                         onImportFromUrl = { url, customName ->
                             viewModel.importPlaylistFromUrl(url, customName) { importedId ->

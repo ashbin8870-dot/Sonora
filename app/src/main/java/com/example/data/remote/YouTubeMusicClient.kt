@@ -7,6 +7,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.xmlpull.v1.XmlPullParser
@@ -210,51 +217,195 @@ class YouTubeMusicClient {
                 if (cleanId.isBlank()) error("Invalid YouTube playlist ID")
 
                 if (isConfigured) {
-                    val infoUrl = "https://www.googleapis.com/youtube/v3/playlists" +
-                        "?part=snippet&id=${Uri.encode(cleanId)}&key=$apiKey"
-                    val playlistTitle = client.newCall(Request.Builder().url(infoUrl).build()).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            val raw = resp.body?.string().orEmpty()
-                            json.decodeFromString<YtPlaylistsInfoResponseDto>(raw)
-                                .items.firstOrNull()?.snippet?.title?.takeIf { it.isNotBlank() }
-                        } else null
-                    } ?: "YouTube Playlist"
-
-                    val itemsUrl = "https://www.googleapis.com/youtube/v3/playlistItems" +
-                        "?part=snippet&maxResults=50&playlistId=${Uri.encode(cleanId)}&key=$apiKey"
-                    val tracks = client.newCall(Request.Builder().url(itemsUrl).build()).execute().use { resp ->
-                        val raw = resp.body?.string().orEmpty()
-                        if (!resp.isSuccessful) error("Could not fetch YouTube playlist (${resp.code})")
-                        val parsed = json.decodeFromString<YtPlaylistItemsResponseDto>(raw)
-                        parsed.items.mapNotNull { item ->
-                            val videoId = item.snippet.resourceId.videoId?.takeIf { it.isNotBlank() }
-                                ?: return@mapNotNull null
-                            val thumb = item.snippet.thumbnails.high?.url
-                                ?: item.snippet.thumbnails.medium?.url
-                                ?: item.snippet.thumbnails.default?.url
-                                ?: "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
-                            val channel = item.snippet.videoOwnerChannelTitle
-                                ?: item.snippet.channelTitle.ifBlank { "YouTube Music" }
-                            YouTubeMusicTrack(
-                                videoId = videoId,
-                                title = decodeHtmlEntities(item.snippet.title),
-                                channelName = decodeHtmlEntities(channel),
-                                thumbnailUrl = thumb
-                            )
-                        }
+                    val apiResult = runCatching { fetchPlaylistViaDataApi(cleanId) }.getOrNull()
+                    if (apiResult != null && apiResult.second.isNotEmpty()) {
+                        return@runCatching apiResult
                     }
-                    decodeHtmlEntities(playlistTitle) to tracks
-                } else {
-                    // Public Atom XML playlist feed works for public playlists without an API key
+                }
+
+                // Try public Atom XML feed (works for PL... playlists without API key)
+                val xmlResult = runCatching {
                     val feedUrl = "https://www.youtube.com/feeds/videos.xml?playlist_id=${Uri.encode(cleanId)}"
                     val xml = client.newCall(Request.Builder().url(feedUrl).build()).execute().use { resp ->
-                        if (!resp.isSuccessful) error("Could not load public YouTube playlist (${resp.code})")
+                        if (!resp.isSuccessful) error("Atom feed HTTP ${resp.code}")
                         resp.body?.string().orEmpty()
                     }
                     parseAtomPlaylistFeed(xml)
+                }.getOrNull()
+                if (xmlResult != null && xmlResult.second.isNotEmpty()) {
+                    return@runCatching xmlResult
+                }
+
+                // Fallback: public YouTube playlist page ytInitialData (works for OLAK5uy_, PL, mixes)
+                fetchPlaylistFromWebPage(cleanId)
+            }
+        }
+
+    private fun fetchPlaylistViaDataApi(cleanId: String): Pair<String, List<YouTubeMusicTrack>> {
+        val infoUrl = "https://www.googleapis.com/youtube/v3/playlists" +
+            "?part=snippet&id=${Uri.encode(cleanId)}&key=$apiKey"
+        val playlistTitle = client.newCall(Request.Builder().url(infoUrl).build()).execute().use { resp ->
+            if (resp.isSuccessful) {
+                val raw = resp.body?.string().orEmpty()
+                json.decodeFromString<YtPlaylistsInfoResponseDto>(raw)
+                    .items.firstOrNull()?.snippet?.title?.takeIf { it.isNotBlank() }
+            } else null
+        } ?: "YouTube Music Playlist"
+
+        val itemsUrl = "https://www.googleapis.com/youtube/v3/playlistItems" +
+            "?part=snippet&maxResults=50&playlistId=${Uri.encode(cleanId)}&key=$apiKey"
+        val tracks = client.newCall(Request.Builder().url(itemsUrl).build()).execute().use { resp ->
+            val raw = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) error("Could not fetch YouTube playlist (${resp.code})")
+            val parsed = json.decodeFromString<YtPlaylistItemsResponseDto>(raw)
+            parsed.items.mapNotNull { item ->
+                val videoId = item.snippet.resourceId.videoId?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val thumb = item.snippet.thumbnails.high?.url
+                    ?: item.snippet.thumbnails.medium?.url
+                    ?: item.snippet.thumbnails.default?.url
+                    ?: "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                val channel = item.snippet.videoOwnerChannelTitle
+                    ?: item.snippet.channelTitle.ifBlank { "YouTube Music" }
+                YouTubeMusicTrack(
+                    videoId = videoId,
+                    title = decodeHtmlEntities(item.snippet.title),
+                    channelName = decodeHtmlEntities(channel),
+                    thumbnailUrl = thumb
+                )
+            }
+        }
+        return decodeHtmlEntities(playlistTitle) to tracks
+    }
+
+    private fun fetchPlaylistFromWebPage(cleanId: String): Pair<String, List<YouTubeMusicTrack>> {
+        val url = "https://www.youtube.com/playlist?list=${Uri.encode(cleanId)}&hl=en"
+        val request = Request.Builder()
+            .url(url)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .build()
+
+        val html = client.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) error("Could not load YouTube playlist (${resp.code})")
+            resp.body?.string().orEmpty()
+        }
+
+        val jsonText = extractYtInitialDataJson(html)
+            ?: error("Could not parse YouTube playlist page. Make sure the playlist is public or unlisted.")
+        val root = json.parseToJsonElement(jsonText).jsonObject
+
+        val metaTitle = root["metadata"]?.jsonObject
+            ?.get("playlistMetadataRenderer")?.jsonObject
+            ?.get("title")?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
+
+        val tracks = mutableListOf<YouTubeMusicTrack>()
+        val seenIds = HashSet<String>()
+        collectPlaylistVideoRenderers(root, tracks, seenIds)
+
+        if (tracks.isEmpty()) {
+            error("No playable tracks found in that YouTube playlist.")
+        }
+        return decodeHtmlEntities(metaTitle ?: "YouTube Music Playlist") to tracks
+    }
+
+    private fun extractYtInitialDataJson(html: String): String? {
+        val markerIdx = listOf("var ytInitialData = ", "window[\"ytInitialData\"] = ", "ytInitialData = ")
+            .firstNotNullOfOrNull { marker ->
+                html.indexOf(marker).takeIf { it >= 0 }?.let { it + marker.length }
+            } ?: return null
+
+        val startBrace = html.indexOf('{', markerIdx)
+        if (startBrace < 0) return null
+
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in startBrace until html.length) {
+            val ch = html[i]
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (ch == '\\' && inString) {
+                escaped = true
+                continue
+            }
+            if (ch == '"') {
+                inString = !inString
+                continue
+            }
+            if (!inString) {
+                if (ch == '{') depth++
+                else if (ch == '}') {
+                    depth--
+                    if (depth == 0) {
+                        return html.substring(startBrace, i + 1)
+                    }
                 }
             }
         }
+        return null
+    }
+
+    private fun collectPlaylistVideoRenderers(
+        element: JsonElement,
+        out: MutableList<YouTubeMusicTrack>,
+        seenIds: MutableSet<String>,
+    ) {
+        when (element) {
+            is JsonObject -> {
+                val renderer = element["playlistVideoRenderer"] as? JsonObject
+                if (renderer != null) {
+                    val videoId = renderer["videoId"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotBlank() }
+                    val title = extractYtText(renderer["title"])
+                    if (videoId != null && !title.isNullOrBlank() && seenIds.add(videoId)) {
+                        val channel = extractYtText(renderer["shortBylineText"])
+                            ?: extractYtText(renderer["longBylineText"])
+                            ?: "YouTube Music"
+                        val thumb = renderer["thumbnail"]?.jsonObject
+                            ?.get("thumbnails")?.jsonArray
+                            ?.lastOrNull()?.jsonObject
+                            ?.get("url")?.jsonPrimitive?.contentOrNull
+                            ?: "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                        out.add(
+                            YouTubeMusicTrack(
+                                videoId = videoId,
+                                title = decodeHtmlEntities(title),
+                                channelName = decodeHtmlEntities(channel),
+                                thumbnailUrl = thumb
+                            )
+                        )
+                    }
+                } else {
+                    for (value in element.values) {
+                        collectPlaylistVideoRenderers(value, out, seenIds)
+                    }
+                }
+            }
+            is JsonArray -> {
+                for (item in element) {
+                    collectPlaylistVideoRenderers(item, out, seenIds)
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun extractYtText(el: JsonElement?): String? {
+        val obj = el as? JsonObject ?: return null
+        obj["simpleText"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
+        val runs = obj["runs"] as? JsonArray ?: return null
+        val joined = runs.mapNotNull { (it as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull }
+            .joinToString("")
+            .trim()
+        return joined.takeIf { it.isNotBlank() }
+    }
 
     private fun parseAtomPlaylistFeed(xml: String): Pair<String, List<YouTubeMusicTrack>> {
         val parser = Xml.newPullParser()

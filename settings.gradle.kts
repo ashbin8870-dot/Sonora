@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Sonora"
+rootProject.name = "RinMusic"
 
 include(":app")

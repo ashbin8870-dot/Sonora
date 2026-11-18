@@ -22,10 +22,13 @@ import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.FileOpen
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -51,11 +54,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.PlaylistWithTracks
 import com.example.data.model.TrackEntity
 import com.example.data.remote.CountryMarket
 import com.example.data.remote.GlobalMusicMarkets
+import com.example.data.remote.SpotifyPlaylist
 
 @Composable
 fun AddStreamDialog(
@@ -339,13 +344,26 @@ fun AddToPlaylistSheet(
     }
 }
 
+enum class ImportPlaylistSourceTab(val label: String) {
+    YOUTUBE_MUSIC("YouTube Music"),
+    SPOTIFY("Spotify"),
+    FILE_AND_LOCAL("File / Audio")
+}
+
 @Composable
 fun ImportPlaylistDialog(
+    initialTab: ImportPlaylistSourceTab = ImportPlaylistSourceTab.YOUTUBE_MUSIC,
+    spotifyConfigured: Boolean = false,
+    spotifySignedIn: Boolean = false,
+    spotifyPlaylists: List<SpotifyPlaylist> = emptyList(),
+    onConnectSpotify: () -> Unit = {},
+    onImportSpotifyAccountPlaylist: (SpotifyPlaylist) -> Unit = {},
     onDismiss: () -> Unit,
     onImportFromUrl: (url: String, customName: String) -> Unit,
     onPickPlaylistFile: (customName: String) -> Unit,
     onPickAudioFilesForPlaylist: (customName: String) -> Unit,
 ) {
+    var selectedTab by remember(initialTab) { mutableStateOf(initialTab) }
     var playlistUrl by remember { mutableStateOf("") }
     var customName by remember { mutableStateOf("") }
 
@@ -358,12 +376,30 @@ fun ImportPlaylistDialog(
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Import from a YouTube / YouTube Music playlist link, Spotify playlist link, M3U/PLS web URL, or local playlist & audio files.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ImportPlaylistSourceTab.entries.forEach { tab ->
+                        FilterChip(
+                            selected = selectedTab == tab,
+                            onClick = { selectedTab = tab },
+                            label = {
+                                Text(
+                                    text = when (tab) {
+                                        ImportPlaylistSourceTab.YOUTUBE_MUSIC -> "YT Music"
+                                        ImportPlaylistSourceTab.SPOTIFY -> "Spotify"
+                                        ImportPlaylistSourceTab.FILE_AND_LOCAL -> "Files"
+                                    },
+                                    maxLines = 1
+                                )
+                            },
+                            modifier = Modifier.testTag("import_tab_${tab.name.lowercase()}")
+                        )
+                    }
+                }
+
                 OutlinedTextField(
                     value = customName,
                     onValueChange = { customName = it },
@@ -373,60 +409,196 @@ fun ImportPlaylistDialog(
                         .fillMaxWidth()
                         .testTag("import_playlist_name_input")
                 )
-                OutlinedTextField(
-                    value = playlistUrl,
-                    onValueChange = { playlistUrl = it },
-                    label = { Text("YouTube, Spotify, or M3U/PLS URL") },
-                    placeholder = { Text("https://music.youtube.com/playlist?list=...") },
-                    leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("import_playlist_url_input")
-                )
-                Button(
-                    onClick = {
-                        onImportFromUrl(playlistUrl, customName)
-                        onDismiss()
-                    },
-                    enabled = playlistUrl.isNotBlank(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("import_playlist_url_button")
-                ) {
-                    Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Import from URL")
-                }
 
-                HorizontalDivider()
+                when (selectedTab) {
+                    ImportPlaylistSourceTab.YOUTUBE_MUSIC -> {
+                        Text(
+                            text = "Paste any public YouTube Music or YouTube playlist link (music.youtube.com/playlist?list=... or youtube.com/playlist?list=...).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = playlistUrl,
+                            onValueChange = { playlistUrl = it },
+                            label = { Text("YouTube Music Playlist URL") },
+                            placeholder = { Text("https://music.youtube.com/playlist?list=...") },
+                            leadingIcon = { Icon(Icons.Rounded.SmartDisplay, contentDescription = null) },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_url_input")
+                        )
+                        Button(
+                            onClick = {
+                                onImportFromUrl(playlistUrl, customName)
+                                onDismiss()
+                            },
+                            enabled = playlistUrl.isNotBlank(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_url_button")
+                        ) {
+                            Icon(Icons.Rounded.SmartDisplay, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Import YouTube Music Playlist")
+                        }
+                    }
 
-                FilledTonalButton(
-                    onClick = {
-                        onDismiss()
-                        onPickPlaylistFile(customName)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("import_playlist_file_button")
-                ) {
-                    Icon(Icons.Rounded.FileOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Pick .m3u / .m3u8 / .pls File")
-                }
+                    ImportPlaylistSourceTab.SPOTIFY -> {
+                        Text(
+                            text = "Paste any public Spotify playlist URL (open.spotify.com/playlist/... or spotify:playlist:...) to import into RinMusic.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = playlistUrl,
+                            onValueChange = { playlistUrl = it },
+                            label = { Text("Spotify Playlist URL") },
+                            placeholder = { Text("https://open.spotify.com/playlist/...") },
+                            leadingIcon = { Icon(Icons.Rounded.GraphicEq, contentDescription = null) },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_url_input")
+                        )
+                        Button(
+                            onClick = {
+                                onImportFromUrl(playlistUrl, customName)
+                                onDismiss()
+                            },
+                            enabled = playlistUrl.isNotBlank(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_url_button")
+                        ) {
+                            Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Import Spotify Playlist")
+                        }
 
-                OutlinedButton(
-                    onClick = {
-                        onDismiss()
-                        onPickAudioFilesForPlaylist(customName)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("import_playlist_audio_files_button")
-                ) {
-                    Icon(Icons.Rounded.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Select Audio Files as Playlist")
+                        if (spotifyConfigured) {
+                            HorizontalDivider()
+                            if (!spotifySignedIn) {
+                                OutlinedButton(
+                                    onClick = {
+                                        onDismiss()
+                                        onConnectSpotify()
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("import_connect_spotify_button")
+                                ) {
+                                    Icon(Icons.Rounded.Login, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Connect Spotify for Private Playlists")
+                                }
+                            } else if (spotifyPlaylists.isNotEmpty()) {
+                                Text(
+                                    text = "Your Spotify Playlists",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 180.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    items(spotifyPlaylists, key = { "sp_imp_${it.id}" }) { sp ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                                .clickable {
+                                                    onImportSpotifyAccountPlaylist(sp)
+                                                    onDismiss()
+                                                }
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = sp.name,
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${sp.trackCount} tracks",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = Icons.Rounded.Add,
+                                                contentDescription = "Import Spotify playlist",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ImportPlaylistSourceTab.FILE_AND_LOCAL -> {
+                        OutlinedTextField(
+                            value = playlistUrl,
+                            onValueChange = { playlistUrl = it },
+                            label = { Text("Remote .m3u / .m3u8 / .pls URL") },
+                            placeholder = { Text("https://example.com/playlist.m3u8") },
+                            leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_url_input")
+                        )
+                        Button(
+                            onClick = {
+                                onImportFromUrl(playlistUrl, customName)
+                                onDismiss()
+                            },
+                            enabled = playlistUrl.isNotBlank(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_url_button")
+                        ) {
+                            Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Import from M3U / PLS URL")
+                        }
+
+                        HorizontalDivider()
+
+                        FilledTonalButton(
+                            onClick = {
+                                onDismiss()
+                                onPickPlaylistFile(customName)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_file_button")
+                        ) {
+                            Icon(Icons.Rounded.FileOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Pick .m3u / .m3u8 / .pls File")
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                onDismiss()
+                                onPickAudioFilesForPlaylist(customName)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("import_playlist_audio_files_button")
+                        ) {
+                            Icon(Icons.Rounded.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Select Audio Files as Playlist")
+                        }
+                    }
                 }
             }
         },

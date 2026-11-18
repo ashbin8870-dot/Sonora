@@ -51,18 +51,24 @@ class PlaylistImportClient(
 
             // 2. Spotify playlist URL or spotify:playlist: URI
             spotifyClient.parseSpotifyPlaylistId(trimmed)?.let { spPlaylistId ->
-                if (!spotifyClient.isConfigured) {
-                    error("Add SPOTIFY_CLIENT_ID in AI Studio Secrets and sign in to import Spotify playlists.")
-                }
-                val meta = spotifyClient.fetchPlaylistMeta(spPlaylistId).getOrElse {
-                    "Spotify Playlist" to ""
-                }
-                val tracks = spotifyClient.fetchPlaylistTracks(spPlaylistId).getOrThrow()
+                val apiLoaded = if (spotifyClient.isConfigured) {
+                    runCatching {
+                        val meta = spotifyClient.fetchPlaylistMeta(spPlaylistId).getOrElse {
+                            "Spotify Playlist" to ""
+                        }
+                        val apiTracks = spotifyClient.fetchPlaylistTracks(spPlaylistId).getOrThrow()
+                        Triple(meta.first, meta.second, apiTracks)
+                    }.getOrNull()
+                } else null
+
+                val (spTitle, spDesc, tracks) = apiLoaded
+                    ?: spotifyClient.fetchPublicEmbedPlaylist(spPlaylistId).getOrThrow()
+
                 if (tracks.isEmpty()) error("No tracks found in that Spotify playlist.")
-                val finalName = customName?.trim()?.takeIf { it.isNotBlank() } ?: meta.first
+                val finalName = customName?.trim()?.takeIf { it.isNotBlank() } ?: spTitle
                 return@runCatching ImportedPlaylistPayload(
                     name = finalName,
-                    description = meta.second.ifBlank { "Imported from Spotify (${tracks.size} tracks)" },
+                    description = spDesc.ifBlank { "Imported from Spotify (${tracks.size} tracks)" },
                     coverResKey = "electronic",
                     tracks = tracks.map { it.toPlaylistTrackEntity() }
                 )
