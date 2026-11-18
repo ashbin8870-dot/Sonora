@@ -10,12 +10,17 @@ import com.example.SonoraApplication
 import com.example.data.local.UserPreferences
 import com.example.data.model.PlaylistWithTracks
 import com.example.data.model.TrackEntity
+import com.example.data.remote.CountryMarket
+import com.example.data.remote.GlobalMusicMarkets
+import com.example.data.remote.GlobalMusicTrack
 import com.example.data.remote.SpotifyConnectState
 import com.example.data.remote.SpotifyPlaylist
 import com.example.data.remote.SpotifyTrack
 import com.example.data.remote.SpotifyUserProfile
 import com.example.data.remote.YouTubeMusicTrack
 import com.example.player.PlayerUiState
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,7 +29,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -100,6 +108,7 @@ data class ServicesUiState(
     val spotifyLoading: Boolean = false,
     val spotifyProfile: SpotifyUserProfile? = null,
     val spotifyPlaylists: List<SpotifyPlaylist> = emptyList(),
+    val spotifySelectedPlaylist: SpotifyPlaylist? = null,
     val spotifySelectedPlaylistName: String? = null,
     val spotifyTracks: List<SpotifyTrack> = emptyList(),
     val spotifySearchQuery: String = "",
@@ -112,6 +121,17 @@ data class ServicesUiState(
     val youtubeDirectUrl: String = "",
     val youtubeTracks: List<YouTubeMusicTrack> = emptyList(),
 )
+
+data class GlobalSearchUiState(
+    val selectedCountryCode: String = GlobalMusicMarkets.ALL_COUNTRIES.code,
+    val isLoading: Boolean = false,
+    val results: List<GlobalMusicTrack> = emptyList(),
+    val errorMessage: String? = null,
+    val lastSearchedQuery: String = "",
+) {
+    val selectedCountry: CountryMarket
+        get() = GlobalMusicMarkets.findByCode(selectedCountryCode)
+}
 
 data class MusicHomeUiState(
     val allTracks: List<TrackEntity> = emptyList(),
@@ -159,6 +179,7 @@ data class MusicHomeUiState(
         }
 }
 
+@OptIn(FlowPreview::class)
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as SonoraApplication
@@ -168,6 +189,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val playerManager = app.playerManager
     private val spotifyClient = app.spotifyClient
     private val youTubeClient = app.youTubeMusicClient
+    private val globalSearchClient = app.globalMusicSearchClient
+    private val playlistImportClient = app.playlistImportClient
 
     private val selectedLibraryTab = MutableStateFlow(LibraryTab.OFFLINE)
     private val searchQuery = MutableStateFlow("")
@@ -180,6 +203,14 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         )
     )
     val servicesState: StateFlow<ServicesUiState> = _servicesState.asStateFlow()
+
+    private val _globalSearchState = MutableStateFlow(GlobalSearchUiState())
+    val globalSearchState: StateFlow<GlobalSearchUiState> = _globalSearchState.asStateFlow()
+
+    private val _isImportingPlaylist = MutableStateFlow(false)
+    val isImportingPlaylist: StateFlow<Boolean> = _isImportingPlaylist.asStateFlow()
+
+    private var globalSearchJob: Job? = null
 
     private val _embedPlayerState = MutableStateFlow(EmbedPlayerUiState())
     val embedPlayerState: StateFlow<EmbedPlayerUiState> = _embedPlayerState.asStateFlow()
@@ -254,6 +285,26 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 _servicesState.update { it.copy(spotifySignedIn = true) }
                 refreshSpotifyData()
             }
+        }
+        viewModelScope.launch {
+            searchQuery
+                .debounce(450L)
+                .distinctUntilChanged()
+                .collectLatest { raw ->
+                    val trimmed = raw.trim()
+                    if (trimmed.isEmpty()) {
+                        _globalSearchState.update {
+                            it.copy(
+                                isLoading = false,
+                                results = emptyList(),
+                                errorMessage = null,
+                                lastSearchedQuery = ""
+                            )
+                        }
+                    } else if (trimmed.length >= 2 && !uiState.value.isEffectivelyOffline) {
+                        executeGlobalSearch(trimmed, _globalSearchState.value.selectedCountryCode)
+                    }
+                }
         }
     }
 
@@ -334,6 +385,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     spotifySignedIn = profileRes.isSuccess,
                     spotifyProfile = profileRes.getOrNull(),
                     spotifyPlaylists = playlistsRes.getOrDefault(emptyList()),
+                    spotifySelectedPlaylist = null,
                     spotifySelectedPlaylistName = "Your Liked Songs",
                     spotifyTracks = savedRes.getOrDefault(emptyList()),
                     spotifyConnectState = connectRes.getOrNull(),
@@ -347,6 +399,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _servicesState.update {
                 it.copy(
                     spotifyLoading = true,
+                    spotifySelectedPlaylist = playlist,
                     spotifySelectedPlaylistName = playlist.name
                 )
             }
@@ -360,6 +413,26 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     _servicesState.update { it.copy(spotifyLoading = false) }
                     _snackbarEvents.tryEmit(err.message ?: "Failed to load playlist tracks")
                 }
+        }
+    }
+
+    fun importSelectedSpotifyPlaylistToSonora() {
+        val state = _servicesState.value
+        val playlist = state.spotifySelectedPlaylist ?: return
+        val tracks = state.spotifyTracks
+        if (tracks.isEmpty()) {
+            _snackbarEvents.tryEmit("Load tracks in this playlist first.")
+            return
+        }
+        viewModelScope.launch {
+            val payload = playlistImportClient.fromSpotifyPlaylist(playlist, tracks)
+            repository.importPlaylistWithTracks(
+                name = payload.name,
+                description = payload.description,
+                coverResKey = payload.coverResKey,
+                tracks = payload.tracks
+            )
+            _snackbarEvents.tryEmit("Imported \"${payload.name}\" (${payload.tracks.size} tracks) to Playlists")
         }
     }
 
@@ -383,14 +456,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun searchSpotifyTracks() {
         val query = _servicesState.value.spotifySearchQuery.trim()
         if (query.isBlank()) return
+        val market = _globalSearchState.value.selectedCountryCode
         viewModelScope.launch {
             _servicesState.update {
                 it.copy(
                     spotifyLoading = true,
+                    spotifySelectedPlaylist = null,
                     spotifySelectedPlaylistName = "Search: $query"
                 )
             }
-            spotifyClient.searchTracks(query)
+            spotifyClient.searchTracks(query, market = market)
                 .onSuccess { tracks ->
                     _servicesState.update {
                         it.copy(spotifyLoading = false, spotifyTracks = tracks)
@@ -488,6 +563,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     spotifySignedIn = false,
                     spotifyProfile = null,
                     spotifyPlaylists = emptyList(),
+                    spotifySelectedPlaylist = null,
                     spotifyTracks = emptyList(),
                     spotifyConnectState = null,
                     spotifySelectedPlaylistName = null
@@ -518,9 +594,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _snackbarEvents.tryEmit("Turn off Offline Mode to search YouTube Music.")
             return
         }
+        val regionCode = _globalSearchState.value.selectedCountryCode
         viewModelScope.launch {
             _servicesState.update { it.copy(youtubeLoading = true) }
-            youTubeClient.searchMusic(query)
+            youTubeClient.searchMusic(query, regionCode = regionCode)
                 .onSuccess { results ->
                     _servicesState.update {
                         it.copy(youtubeLoading = false, youtubeTracks = results)
@@ -752,11 +829,91 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _snackbarEvents.tryEmit(msg)
             return
         }
+
+        // Route imported YouTube Music & Spotify tracks seamlessly to in-app embed player
+        val ytVideoId = track.youtubeVideoId
+        if (ytVideoId != null) {
+            val ytTrack = YouTubeMusicTrack(
+                videoId = ytVideoId,
+                title = track.title,
+                channelName = track.artist,
+                thumbnailUrl = track.artworkUrl
+            )
+            val ytQueue = contextQueue.mapNotNull { item ->
+                item.youtubeVideoId?.let { vid ->
+                    YouTubeMusicTrack(
+                        videoId = vid,
+                        title = item.title,
+                        channelName = item.artist,
+                        thumbnailUrl = item.artworkUrl
+                    )
+                }
+            }.ifEmpty { listOf(ytTrack) }
+            val idx = ytQueue.indexOfFirst { it.videoId == ytVideoId }.coerceAtLeast(0)
+            playerManager.pause()
+            _embedPlayerState.value = EmbedPlayerUiState(
+                source = EmbedPlaybackSource.YOUTUBE_MUSIC,
+                youtubeTrack = ytTrack,
+                youtubeQueue = ytQueue,
+                youtubeQueueIndex = idx,
+                isPlaying = false,
+                isBuffering = true,
+                isReady = false,
+                isExpanded = true,
+            )
+            return
+        }
+
+        val spTrackId = track.spotifyTrackId
+        if (spTrackId != null) {
+            val spTrack = SpotifyTrack(
+                id = spTrackId,
+                title = track.title,
+                artist = track.artist,
+                album = track.album,
+                durationMs = track.durationMs,
+                artworkUrl = track.artworkUrl,
+                previewUrl = null,
+                spotifyUri = "spotify:track:$spTrackId",
+                externalUrl = "https://open.spotify.com/track/$spTrackId"
+            )
+            val spQueue = contextQueue.mapNotNull { item ->
+                item.spotifyTrackId?.let { sid ->
+                    SpotifyTrack(
+                        id = sid,
+                        title = item.title,
+                        artist = item.artist,
+                        album = item.album,
+                        durationMs = item.durationMs,
+                        artworkUrl = item.artworkUrl,
+                        previewUrl = null,
+                        spotifyUri = "spotify:track:$sid",
+                        externalUrl = "https://open.spotify.com/track/$sid"
+                    )
+                }
+            }.ifEmpty { listOf(spTrack) }
+            val idx = spQueue.indexOfFirst { it.id == spTrackId }.coerceAtLeast(0)
+            playerManager.pause()
+            _embedPlayerState.value = EmbedPlayerUiState(
+                source = EmbedPlaybackSource.SPOTIFY_EMBED,
+                spotifyTrack = spTrack,
+                spotifyQueue = spQueue,
+                spotifyQueueIndex = idx,
+                isPlaying = true,
+                isBuffering = false,
+                isReady = true,
+                durationMs = track.durationMs,
+                isExpanded = true,
+            )
+            return
+        }
+
         closeEmbedPlayer()
         val playableQueue = if (state.isEffectivelyOffline) {
             contextQueue.filter { it.isAvailableOffline }.ifEmpty { listOf(track) }
         } else {
-            contextQueue
+            contextQueue.filter { !it.isYouTubeInAppTrack && !it.isSpotifyEmbedTrack }
+                .ifEmpty { listOf(track) }
         }
         playerManager.playTrack(track, playableQueue)
     }
@@ -772,9 +929,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _snackbarEvents.tryEmit("No playable tracks available in current mode.")
             return
         }
-        closeEmbedPlayer()
         val shuffled = candidates.shuffled()
-        playerManager.setQueueAndPlay(shuffled, 0)
+        val first = shuffled.first()
+        if (first.isYouTubeInAppTrack || first.isSpotifyEmbedTrack) {
+            playTrack(first, shuffled)
+            return
+        }
+        closeEmbedPlayer()
+        val media3Candidates = shuffled.filter { !it.isYouTubeInAppTrack && !it.isSpotifyEmbedTrack }
+        playerManager.setQueueAndPlay(media3Candidates, 0)
     }
 
     fun togglePlayPause() = playerManager.togglePlayPause()
@@ -935,6 +1098,177 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.removeTrackFromPlaylist(playlistId, trackId)
             _snackbarEvents.tryEmit("Removed track from playlist")
+        }
+    }
+
+    // --- Playlist Import ---
+
+    fun importPlaylistFromUrl(
+        url: String,
+        customName: String = "",
+        onSuccess: (Long) -> Unit = {},
+    ) {
+        if (uiState.value.isEffectivelyOffline) {
+            _snackbarEvents.tryEmit("Turn off Offline Mode to import a playlist URL.")
+            return
+        }
+        viewModelScope.launch {
+            _isImportingPlaylist.value = true
+            playlistImportClient.importFromUrl(url, customName)
+                .onSuccess { payload ->
+                    val id = repository.importPlaylistWithTracks(
+                        name = payload.name,
+                        description = payload.description,
+                        coverResKey = payload.coverResKey,
+                        tracks = payload.tracks
+                    )
+                    _isImportingPlaylist.value = false
+                    _snackbarEvents.tryEmit("Imported \"${payload.name}\" (${payload.tracks.size} tracks)")
+                    onSuccess(id)
+                }
+                .onFailure { err ->
+                    _isImportingPlaylist.value = false
+                    _snackbarEvents.tryEmit(err.message ?: "Could not import playlist URL")
+                }
+        }
+    }
+
+    fun importPlaylistFromUri(
+        context: Context,
+        uri: Uri,
+        customName: String = "",
+        onSuccess: (Long) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            _isImportingPlaylist.value = true
+            playlistImportClient.importFromUri(context, uri, customName)
+                .onSuccess { payload ->
+                    val id = repository.importPlaylistWithTracks(
+                        name = payload.name,
+                        description = payload.description,
+                        coverResKey = payload.coverResKey,
+                        tracks = payload.tracks
+                    )
+                    _isImportingPlaylist.value = false
+                    _snackbarEvents.tryEmit("Imported \"${payload.name}\" (${payload.tracks.size} tracks)")
+                    onSuccess(id)
+                }
+                .onFailure { err ->
+                    _isImportingPlaylist.value = false
+                    _snackbarEvents.tryEmit(err.message ?: "Could not read playlist file")
+                }
+        }
+    }
+
+    fun importAudioFilesAsPlaylist(
+        playlistName: String,
+        uris: List<Uri>,
+        onSuccess: (Long) -> Unit = {},
+    ) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _isImportingPlaylist.value = true
+            val (playlistId, count) = repository.importLocalAudioFilesAsPlaylist(playlistName, uris)
+            _isImportingPlaylist.value = false
+            if (playlistId > 0L && count > 0) {
+                _snackbarEvents.tryEmit("Created playlist with $count local audio ${if (count == 1) "file" else "files"}")
+                onSuccess(playlistId)
+            } else {
+                _snackbarEvents.tryEmit("Could not read metadata from selected audio files.")
+            }
+        }
+    }
+
+    // --- All-Countries Global Music Search ---
+
+    fun selectSearchCountry(countryCode: String) {
+        _globalSearchState.update { it.copy(selectedCountryCode = countryCode.uppercase()) }
+        val query = searchQuery.value.trim()
+        if (query.isNotBlank() && !uiState.value.isEffectivelyOffline) {
+            executeGlobalSearch(query, countryCode.uppercase())
+        }
+    }
+
+    fun searchGlobalMusic(overrideQuery: String? = null) {
+        val query = (overrideQuery ?: searchQuery.value).trim()
+        if (overrideQuery != null) {
+            searchQuery.value = overrideQuery
+        }
+        if (query.isBlank()) {
+            _snackbarEvents.tryEmit("Enter a song, artist, or genre to search worldwide.")
+            return
+        }
+        if (uiState.value.isEffectivelyOffline) {
+            _snackbarEvents.tryEmit("Turn off Offline Mode to search worldwide music.")
+            return
+        }
+        executeGlobalSearch(query, _globalSearchState.value.selectedCountryCode)
+    }
+
+    private fun executeGlobalSearch(query: String, countryCode: String) {
+        globalSearchJob?.cancel()
+        globalSearchJob = viewModelScope.launch {
+            _globalSearchState.update {
+                it.copy(isLoading = true, errorMessage = null, lastSearchedQuery = query)
+            }
+            globalSearchClient.searchMusic(query, countryCode)
+                .onSuccess { tracks ->
+                    _globalSearchState.update {
+                        it.copy(isLoading = false, results = tracks, errorMessage = null)
+                    }
+                }
+                .onFailure { err ->
+                    _globalSearchState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = err.message ?: "Global music search failed"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun playGlobalTrack(track: GlobalMusicTrack) {
+        if (uiState.value.isEffectivelyOffline) {
+            _snackbarEvents.tryEmit("Turn off Offline Mode to stream global search tracks.")
+            return
+        }
+        val entity = track.toTrackEntity()
+        val queueEntities = _globalSearchState.value.results
+            .map { it.toTrackEntity() }
+            .ifEmpty { listOf(entity) }
+        viewModelScope.launch {
+            repository.upsertTrack(entity)
+        }
+        closeEmbedPlayer()
+        playerManager.playTrack(entity, queueEntities)
+    }
+
+    fun playNextGlobalTrack(track: GlobalMusicTrack) {
+        val entity = track.toTrackEntity()
+        viewModelScope.launch { repository.upsertTrack(entity) }
+        playNextInQueue(entity)
+    }
+
+    fun addGlobalTrackToQueue(track: GlobalMusicTrack) {
+        val entity = track.toTrackEntity()
+        viewModelScope.launch { repository.upsertTrack(entity) }
+        addToQueue(entity)
+    }
+
+    fun downloadGlobalTrack(track: GlobalMusicTrack) {
+        val entity = track.toTrackEntity()
+        viewModelScope.launch {
+            repository.upsertTrack(entity)
+            downloadTrack(entity)
+        }
+    }
+
+    fun saveGlobalTrackAndPickPlaylist(track: GlobalMusicTrack, onReady: (TrackEntity) -> Unit) {
+        val entity = track.toTrackEntity()
+        viewModelScope.launch {
+            repository.upsertTrack(entity)
+            onReady(entity)
         }
     }
 

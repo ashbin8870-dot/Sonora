@@ -17,8 +17,10 @@ import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Downloading
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Podcasts
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -53,6 +55,8 @@ fun TrackSourceBadge(
             Triple("SAVING $pct%", WarmAmber, Icons.Rounded.Downloading)
         }
         track.isLiveStream -> Triple("LIVE RADIO", SoftRose, Icons.Rounded.Podcasts)
+        track.isYouTubeInAppTrack -> Triple("YT MUSIC", SoftRose, Icons.Rounded.SmartDisplay)
+        track.isSpotifyEmbedTrack -> Triple("SPOTIFY", EmeraldOffline, Icons.Rounded.GraphicEq)
         track.sourceType == TrackSourceType.LOCAL -> Triple("LOCAL", EmeraldOffline, Icons.Rounded.Folder)
         track.downloadStatus == DownloadStatus.DOWNLOADED -> Triple("OFFLINE", EmeraldOffline, Icons.Rounded.CloudDone)
         else -> Triple("ONLINE", ElectricCyan, Icons.Rounded.Public)

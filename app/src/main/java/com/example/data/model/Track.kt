@@ -43,6 +43,27 @@ data class TrackEntity(
         get() = sourceType == TrackSourceType.LOCAL ||
             (downloadStatus == DownloadStatus.DOWNLOADED && !localFilePath.isNullOrBlank())
 
+    val isYouTubeInAppTrack: Boolean
+        get() = streamUrl?.startsWith("yt://") == true
+
+    val youtubeVideoId: String?
+        get() = if (isYouTubeInAppTrack) {
+            streamUrl?.removePrefix("yt://")?.takeIf { it.isNotBlank() }
+        } else null
+
+    val isSpotifyEmbedTrack: Boolean
+        get() = streamUrl?.startsWith("spotify://track/") == true
+
+    val spotifyTrackId: String?
+        get() = if (isSpotifyEmbedTrack) {
+            streamUrl?.removePrefix("spotify://track/")?.takeIf { it.isNotBlank() }
+        } else null
+
+    val isDirectDownloadableStream: Boolean
+        get() = !isLiveStream &&
+            !streamUrl.isNullOrBlank() &&
+            (streamUrl.startsWith("http://") || streamUrl.startsWith("https://"))
+
     val playableUri: String
         get() = when {
             !localFilePath.isNullOrBlank() && downloadStatus == DownloadStatus.DOWNLOADED -> "file://$localFilePath"

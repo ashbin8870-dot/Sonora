@@ -82,8 +82,10 @@ import androidx.navigation.toRoute
 import com.example.data.model.TrackEntity
 import com.example.ui.components.AddStreamDialog
 import com.example.ui.components.AddToPlaylistSheet
+import com.example.ui.components.CountryPickerSheet
 import com.example.ui.components.CreatePlaylistDialog
 import com.example.ui.components.EmbedNowPlayingOverlay
+import com.example.ui.components.ImportPlaylistDialog
 import com.example.ui.components.MiniPlayerBar
 import com.example.ui.components.NowPlayingSheet
 import com.example.ui.components.PersistentEmbedWebView
@@ -154,6 +156,8 @@ fun SonoraRoot(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val servicesState by viewModel.servicesState.collectAsStateWithLifecycle()
+    val globalSearchState by viewModel.globalSearchState.collectAsStateWithLifecycle()
+    val isImportingPlaylist by viewModel.isImportingPlaylist.collectAsStateWithLifecycle()
     val embedState by viewModel.embedPlayerState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -189,6 +193,9 @@ fun SonoraRoot(
     var showNowPlaying by remember { mutableStateOf(false) }
     var showAddStreamDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showImportPlaylistDialog by remember { mutableStateOf(false) }
+    var showCountryPickerSheet by remember { mutableStateOf(false) }
+    var pendingPlaylistCustomName by remember { mutableStateOf("") }
     var trackForPlaylistSheet by remember { mutableStateOf<TrackEntity?>(null) }
 
     var miniVideoBounds by remember { mutableStateOf<Rect?>(null) }
@@ -201,6 +208,37 @@ fun SonoraRoot(
         if (uris.isNotEmpty()) {
             viewModel.importLocalAudio(uris)
         }
+    }
+
+    // SAF OpenDocument launcher for .m3u / .m3u8 / .pls / .txt playlists
+    val playlistFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importPlaylistFromUri(
+                context = context,
+                uri = uri,
+                customName = pendingPlaylistCustomName
+            ) { importedId ->
+                navController.navigate(PlaylistDetailRoute(importedId))
+            }
+        }
+        pendingPlaylistCustomName = ""
+    }
+
+    // SAF OpenMultipleDocuments launcher to import audio files directly as a new playlist
+    val playlistAudioFilesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importAudioFilesAsPlaylist(
+                playlistName = pendingPlaylistCustomName,
+                uris = uris
+            ) { importedId ->
+                navController.navigate(PlaylistDetailRoute(importedId))
+            }
+        }
+        pendingPlaylistCustomName = ""
     }
 
     // Android 13+ notification permission for media playback controls
@@ -447,6 +485,7 @@ fun SonoraRoot(
                                         onDisconnectSpotify = { viewModel.disconnectSpotify() },
                                         onRefreshSpotify = { viewModel.refreshSpotifyData() },
                                         onSelectSpotifyPlaylist = { viewModel.selectSpotifyPlaylist(it) },
+                                        onImportSelectedSpotifyPlaylist = { viewModel.importSelectedSpotifyPlaylistToSonora() },
                                         onSpotifyQueryChange = { viewModel.updateSpotifySearchQuery(it) },
                                         onSearchSpotify = { viewModel.searchSpotifyTracks() },
                                         onSpotifyDirectUrlChange = { viewModel.updateSpotifyDirectUrl(it) },
@@ -468,8 +507,10 @@ fun SonoraRoot(
                                 composable<PlaylistsRoute> {
                                     PlaylistsScreen(
                                         playlists = uiState.playlists,
+                                        isImportingPlaylist = isImportingPlaylist,
                                         onOpenPlaylist = { id -> navController.navigate(PlaylistDetailRoute(id)) },
                                         onCreatePlaylistClick = { showCreatePlaylistDialog = true },
+                                        onImportPlaylistClick = { showImportPlaylistDialog = true },
                                         onDeletePlaylist = { id, name -> viewModel.deletePlaylist(id, name) },
                                         onPlayPlaylist = { pl ->
                                             pl.tracks.firstOrNull()?.let { first ->
@@ -510,8 +551,12 @@ fun SonoraRoot(
                                 composable<SearchRoute> {
                                     SearchScreen(
                                         uiState = uiState,
+                                        globalSearchState = globalSearchState,
                                         playerState = playerState,
                                         onQueryChange = { viewModel.updateSearchQuery(it) },
+                                        onSearchSubmit = { viewModel.searchGlobalMusic(it) },
+                                        onSelectCountry = { viewModel.selectSearchCountry(it) },
+                                        onOpenCountryPicker = { showCountryPickerSheet = true },
                                         onSelectFilter = { viewModel.selectSearchFilter(it) },
                                         onPlayTrack = { track, queue -> viewModel.playTrack(track, queue) },
                                         onToggleFavorite = { viewModel.toggleFavorite(it) },
@@ -521,6 +566,15 @@ fun SonoraRoot(
                                         onAddToQueue = { viewModel.addToQueue(it) },
                                         onAddToPlaylist = { trackForPlaylistSheet = it },
                                         onDeleteTrack = { viewModel.deleteTrack(it) },
+                                        onPlayGlobalTrack = { viewModel.playGlobalTrack(it) },
+                                        onPlayNextGlobalTrack = { viewModel.playNextGlobalTrack(it) },
+                                        onAddGlobalTrackToQueue = { viewModel.addGlobalTrackToQueue(it) },
+                                        onDownloadGlobalTrack = { viewModel.downloadGlobalTrack(it) },
+                                        onAddGlobalTrackToPlaylist = { gTrack ->
+                                            viewModel.saveGlobalTrackAndPickPlaylist(gTrack) { saved ->
+                                                trackForPlaylistSheet = saved
+                                            }
+                                        },
                                         bottomContentPadding = contentBottomPad
                                     )
                                 }
@@ -622,6 +676,45 @@ fun SonoraRoot(
                         onDismiss = { showCreatePlaylistDialog = false },
                         onCreate = { name, desc, coverKey ->
                             viewModel.createPlaylist(name, desc, coverKey)
+                        }
+                    )
+                }
+
+                if (showImportPlaylistDialog) {
+                    ImportPlaylistDialog(
+                        onDismiss = { showImportPlaylistDialog = false },
+                        onImportFromUrl = { url, customName ->
+                            viewModel.importPlaylistFromUrl(url, customName) { importedId ->
+                                navController.navigate(PlaylistDetailRoute(importedId))
+                            }
+                        },
+                        onPickPlaylistFile = { customName ->
+                            pendingPlaylistCustomName = customName
+                            playlistFilePickerLauncher.launch(
+                                arrayOf(
+                                    "audio/x-mpegurl",
+                                    "audio/mpegurl",
+                                    "application/vnd.apple.mpegurl",
+                                    "application/x-mpegurl",
+                                    "audio/x-scpls",
+                                    "text/plain",
+                                    "*/*"
+                                )
+                            )
+                        },
+                        onPickAudioFilesForPlaylist = { customName ->
+                            pendingPlaylistCustomName = customName
+                            playlistAudioFilesLauncher.launch(arrayOf("audio/*"))
+                        }
+                    )
+                }
+
+                if (showCountryPickerSheet) {
+                    CountryPickerSheet(
+                        selectedCountryCode = globalSearchState.selectedCountryCode,
+                        onDismiss = { showCountryPickerSheet = false },
+                        onSelectCountry = { market ->
+                            viewModel.selectSearchCountry(market.code)
                         }
                     )
                 }

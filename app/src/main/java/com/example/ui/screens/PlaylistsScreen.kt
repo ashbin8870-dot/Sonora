@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.QueueMusic
@@ -31,6 +32,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -59,8 +61,10 @@ import com.example.ui.viewmodel.MusicHomeUiState
 @Composable
 fun PlaylistsScreen(
     playlists: List<PlaylistWithTracks>,
+    isImportingPlaylist: Boolean,
     onOpenPlaylist: (Long) -> Unit,
     onCreatePlaylistClick: () -> Unit,
+    onImportPlaylistClick: () -> Unit,
     onDeletePlaylist: (Long, String) -> Unit,
     onPlayPlaylist: (PlaylistWithTracks) -> Unit,
     bottomContentPadding: PaddingValues,
@@ -75,37 +79,73 @@ fun PlaylistsScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column {
-                    Text(
-                        text = "Playlists",
-                        style = MaterialTheme.typography.headlineMedium
-                    )
-                    Text(
-                        text = "Mix local files & online tracks together",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Button(
-                    onClick = onCreatePlaylistClick,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.testTag("new_playlist_button")
+                Text(
+                    text = "Playlists",
+                    style = MaterialTheme.typography.headlineMedium
+                )
+                Text(
+                    text = "Import YouTube, Spotify, M3U/PLS, or local files",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                    FilledTonalButton(
+                        onClick = onImportPlaylistClick,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("import_playlist_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.FileDownload,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Import Playlist")
+                    }
+                    Button(
+                        onClick = onCreatePlaylistClick,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("new_playlist_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("New Playlist")
+                    }
+                }
+            }
+        }
+
+        if (isImportingPlaylist) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Importing playlist tracks...",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text("New")
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
         }
@@ -130,14 +170,21 @@ fun PlaylistsScreen(
                         style = MaterialTheme.typography.titleLarge
                     )
                     Text(
-                        text = "Create custom playlists combining offline files and online streams.",
+                        text = "Create custom playlists or import from YouTube, Spotify, M3U/PLS files, and device audio.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Button(onClick = onCreatePlaylistClick) {
-                        Icon(Icons.Rounded.Add, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Create Playlist")
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilledTonalButton(onClick = onImportPlaylistClick) {
+                            Icon(Icons.Rounded.FileDownload, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Import")
+                        }
+                        Button(onClick = onCreatePlaylistClick) {
+                            Icon(Icons.Rounded.Add, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Create")
+                        }
                     }
                 }
             }

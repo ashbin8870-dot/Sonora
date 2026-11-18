@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -16,14 +18,25 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AudioFile
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.FileOpen
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -37,9 +50,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.model.PlaylistWithTracks
 import com.example.data.model.TrackEntity
+import com.example.data.remote.CountryMarket
+import com.example.data.remote.GlobalMusicMarkets
 
 @Composable
 fun AddStreamDialog(
@@ -322,3 +338,240 @@ fun AddToPlaylistSheet(
         }
     }
 }
+
+@Composable
+fun ImportPlaylistDialog(
+    onDismiss: () -> Unit,
+    onImportFromUrl: (url: String, customName: String) -> Unit,
+    onPickPlaylistFile: (customName: String) -> Unit,
+    onPickAudioFilesForPlaylist: (customName: String) -> Unit,
+) {
+    var playlistUrl by remember { mutableStateOf("") }
+    var customName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Import Playlist",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Import from a YouTube / YouTube Music playlist link, Spotify playlist link, M3U/PLS web URL, or local playlist & audio files.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = customName,
+                    onValueChange = { customName = it },
+                    label = { Text("Playlist Name (optional)") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("import_playlist_name_input")
+                )
+                OutlinedTextField(
+                    value = playlistUrl,
+                    onValueChange = { playlistUrl = it },
+                    label = { Text("YouTube, Spotify, or M3U/PLS URL") },
+                    placeholder = { Text("https://music.youtube.com/playlist?list=...") },
+                    leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("import_playlist_url_input")
+                )
+                Button(
+                    onClick = {
+                        onImportFromUrl(playlistUrl, customName)
+                        onDismiss()
+                    },
+                    enabled = playlistUrl.isNotBlank(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("import_playlist_url_button")
+                ) {
+                    Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Import from URL")
+                }
+
+                HorizontalDivider()
+
+                FilledTonalButton(
+                    onClick = {
+                        onDismiss()
+                        onPickPlaylistFile(customName)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("import_playlist_file_button")
+                ) {
+                    Icon(Icons.Rounded.FileOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Pick .m3u / .m3u8 / .pls File")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onPickAudioFilesForPlaylist(customName)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("import_playlist_audio_files_button")
+                ) {
+                    Icon(Icons.Rounded.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Select Audio Files as Playlist")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CountryPickerSheet(
+    selectedCountryCode: String,
+    onDismiss: () -> Unit,
+    onSelectCountry: (CountryMarket) -> Unit,
+) {
+    var filterText by remember { mutableStateOf("") }
+    val markets = remember(filterText) {
+        val q = filterText.trim().lowercase()
+        if (q.isEmpty()) {
+            GlobalMusicMarkets.ALL_MARKETS
+        } else {
+            GlobalMusicMarkets.ALL_MARKETS.filter {
+                it.name.lowercase().contains(q) ||
+                    it.code.lowercase().contains(q) ||
+                    it.region.lowercase().contains(q)
+            }
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Public,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Column {
+                    Text(
+                        text = "Music Search Region",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Text(
+                        text = "Search All Countries worldwide or pick any storefront",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = filterText,
+                onValueChange = { filterText = it },
+                placeholder = { Text("Search country or continent...") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (filterText.isNotEmpty()) {
+                        IconButton(onClick = { filterText = "" }) {
+                            Icon(Icons.Rounded.Clear, contentDescription = "Clear country filter")
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("country_picker_search_input")
+            )
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .padding(bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(markets, key = { it.code }) { market ->
+                    val isSelected = market.code.equals(selectedCountryCode, ignoreCase = true)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                                else MaterialTheme.colorScheme.surfaceContainerLow
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                                else MaterialTheme.colorScheme.outlineVariant,
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .clickable {
+                                onSelectCountry(market)
+                                onDismiss()
+                            }
+                            .testTag("country_option_${market.code.lowercase()}")
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (market.code == "ALL") {
+                                    "All Countries (Global Mix)"
+                                } else {
+                                    "${market.name} (${market.code})"
+                                },
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                ),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (market.code == "ALL") {
+                                    "Searches across 12+ global regions simultaneously"
+                                } else {
+                                    market.region
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Rounded.Check,
+                                contentDescription = "Selected",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

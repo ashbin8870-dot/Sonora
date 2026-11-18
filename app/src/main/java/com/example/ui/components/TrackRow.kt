@@ -146,8 +146,11 @@ fun TrackRow(
             }
         }
 
-        // Download / Offline indicator action for non-live online tracks
-        if (!track.isLiveStream && track.streamUrl != null) {
+        // Download / Offline indicator action for direct HTTP online tracks
+        if (track.isDirectDownloadableStream ||
+            track.downloadStatus == DownloadStatus.DOWNLOADED ||
+            downloadProgress != null
+        ) {
             when {
                 downloadProgress != null || track.downloadStatus == DownloadStatus.DOWNLOADING -> {
                     Box(

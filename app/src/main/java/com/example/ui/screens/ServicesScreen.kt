@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CastConnected
+import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Login
@@ -82,6 +83,7 @@ fun ServicesScreen(
     onDisconnectSpotify: () -> Unit,
     onRefreshSpotify: () -> Unit,
     onSelectSpotifyPlaylist: (SpotifyPlaylist) -> Unit,
+    onImportSelectedSpotifyPlaylist: () -> Unit,
     onSpotifyQueryChange: (String) -> Unit,
     onSearchSpotify: () -> Unit,
     onSpotifyDirectUrlChange: (String) -> Unit,
@@ -352,11 +354,37 @@ fun ServicesScreen(
 
                 if (servicesState.spotifyTracks.isNotEmpty()) {
                     item {
-                        Text(
-                            text = servicesState.spotifySelectedPlaylistName ?: "Spotify Tracks",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(horizontal = 20.dp)
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = servicesState.spotifySelectedPlaylistName ?: "Spotify Tracks",
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (servicesState.spotifySelectedPlaylist != null) {
+                                Spacer(Modifier.width(8.dp))
+                                FilledTonalButton(
+                                    onClick = onImportSelectedSpotifyPlaylist,
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.testTag("import_spotify_playlist_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.FileDownload,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Import to Sonora")
+                                }
+                            }
+                        }
                     }
 
                     items(servicesState.spotifyTracks, key = { "sp_${it.id}" }) { track ->

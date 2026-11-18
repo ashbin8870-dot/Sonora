@@ -334,18 +334,35 @@ class SpotifyClient(
         }
     }
 
+    suspend fun fetchPlaylistMeta(playlistId: String): Result<Pair<String, String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val raw = authorizedGet("$API_BASE/playlists/${Uri.encode(playlistId)}?fields=name,description")
+            val dto = json.decodeFromString<SpotifyPlaylistDto>(raw)
+            val title = dto.name.ifBlank { "Spotify Playlist" }
+            val desc = dto.description.orEmpty()
+            title to desc
+        }
+    }
+
     suspend fun fetchPlaylistTracks(playlistId: String): Result<List<SpotifyTrack>> = withContext(Dispatchers.IO) {
         runCatching {
-            val raw = authorizedGet("$API_BASE/playlists/$playlistId/tracks?limit=30")
+            val raw = authorizedGet("$API_BASE/playlists/${Uri.encode(playlistId)}/tracks?limit=50")
             val page = json.decodeFromString<SpotifySavedTracksPageDto>(raw)
             page.items.mapNotNull { it.track?.toModel() }
         }
     }
 
-    suspend fun searchTracks(query: String): Result<List<SpotifyTrack>> = withContext(Dispatchers.IO) {
+    suspend fun searchTracks(
+        query: String,
+        market: String? = null,
+    ): Result<List<SpotifyTrack>> = withContext(Dispatchers.IO) {
         runCatching {
             val encoded = Uri.encode(query.trim())
-            val raw = authorizedGet("$API_BASE/search?q=$encoded&type=track&limit=20")
+            val marketParam = market
+                ?.takeIf { it.isNotBlank() && !it.equals("ALL", ignoreCase = true) }
+                ?.let { "&market=${it.uppercase()}" }
+                .orEmpty()
+            val raw = authorizedGet("$API_BASE/search?q=$encoded&type=track&limit=20$marketParam")
             val resp = json.decodeFromString<SpotifySearchResponseDto>(raw)
             resp.tracks.items.map { it.toModel() }
         }
@@ -424,6 +441,18 @@ class SpotifyClient(
             spotifyUri = "spotify:track:$trackId",
             externalUrl = "https://open.spotify.com/track/$trackId"
         )
+    }
+
+    fun parseSpotifyPlaylistId(input: String): String? {
+        val trimmed = input.trim()
+        if (trimmed.isBlank()) return null
+        return when {
+            trimmed.startsWith("spotify:playlist:") ->
+                trimmed.removePrefix("spotify:playlist:").substringBefore('?')
+            trimmed.contains("open.spotify.com/playlist/") ->
+                trimmed.substringAfter("open.spotify.com/playlist/").substringBefore('?').substringBefore('/')
+            else -> null
+        }?.takeIf { it.isNotBlank() }
     }
 
     private suspend fun authorizedGet(url: String): String {

@@ -316,4 +316,63 @@ class MusicRepository(
     suspend fun removeTrackFromPlaylist(playlistId: Long, trackId: String) {
         playlistDao.removeTrackFromPlaylist(playlistId, trackId)
     }
+
+    suspend fun upsertTrack(track: TrackEntity) = withContext(Dispatchers.IO) {
+        trackDao.upsert(track)
+    }
+
+    suspend fun importPlaylistWithTracks(
+        name: String,
+        description: String,
+        coverResKey: String,
+        tracks: List<TrackEntity>,
+    ): Long = withContext(Dispatchers.IO) {
+        val playlistId = playlistDao.insertPlaylist(
+            PlaylistEntity(
+                name = name.trim().ifBlank { "Imported Playlist" },
+                description = description.trim(),
+                coverResKey = coverResKey.ifBlank { "lofi" }
+            )
+        )
+        for (track in tracks) {
+            trackDao.insertIgnore(listOf(track))
+            playlistDao.addTrackToPlaylist(PlaylistTrackCrossRef(playlistId, track.id))
+        }
+        playlistId
+    }
+
+    suspend fun importLocalAudioFilesAsPlaylist(
+        playlistName: String,
+        uris: List<Uri>,
+    ): Pair<Long, Int> = withContext(Dispatchers.IO) {
+        val importedTracks = mutableListOf<TrackEntity>()
+        for (uri in uris) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            extractLocalTrackMetadata(uri)?.let { track ->
+                trackDao.upsert(track)
+                importedTracks.add(track)
+            }
+        }
+        if (importedTracks.isEmpty()) return@withContext (-1L to 0)
+
+        val resolvedName = playlistName.trim().ifBlank {
+            "Imported Local Mix (${importedTracks.size})"
+        }
+        val playlistId = playlistDao.insertPlaylist(
+            PlaylistEntity(
+                name = resolvedName,
+                description = "Imported ${importedTracks.size} local audio files",
+                coverResKey = "acoustic"
+            )
+        )
+        for (track in importedTracks) {
+            playlistDao.addTrackToPlaylist(PlaylistTrackCrossRef(playlistId, track.id))
+        }
+        playlistId to importedTracks.size
+    }
 }

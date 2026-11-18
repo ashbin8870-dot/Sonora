@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import android.net.Uri
+import android.util.Xml
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -8,6 +9,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.xmlpull.v1.XmlPullParser
+import java.io.StringReader
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -43,6 +46,40 @@ private data class YtSearchItemDto(
 @Serializable
 private data class YtSearchResponseDto(
     val items: List<YtSearchItemDto> = emptyList(),
+)
+
+@Serializable
+private data class YtResourceIdDto(
+    val videoId: String? = null,
+)
+
+@Serializable
+private data class YtPlaylistSnippetDto(
+    val title: String = "",
+    val channelTitle: String = "",
+    val videoOwnerChannelTitle: String? = null,
+    val thumbnails: YtThumbnailsDto = YtThumbnailsDto(),
+    val resourceId: YtResourceIdDto = YtResourceIdDto(),
+)
+
+@Serializable
+private data class YtPlaylistItemDto(
+    val snippet: YtPlaylistSnippetDto = YtPlaylistSnippetDto(),
+)
+
+@Serializable
+private data class YtPlaylistItemsResponseDto(
+    val items: List<YtPlaylistItemDto> = emptyList(),
+)
+
+@Serializable
+private data class YtPlaylistsInfoResponseDto(
+    val items: List<YtPlaylistInfoItemDto> = emptyList(),
+)
+
+@Serializable
+private data class YtPlaylistInfoItemDto(
+    val snippet: YtSnippetDto = YtSnippetDto(),
 )
 
 data class YouTubeMusicTrack(
@@ -127,15 +164,22 @@ class YouTubeMusicClient {
     val isConfigured: Boolean
         get() = apiKey.isNotBlank() && apiKey != "YOUR_YOUTUBE_API_KEY"
 
-    suspend fun searchMusic(query: String): Result<List<YouTubeMusicTrack>> = withContext(Dispatchers.IO) {
+    suspend fun searchMusic(
+        query: String,
+        regionCode: String? = null,
+    ): Result<List<YouTubeMusicTrack>> = withContext(Dispatchers.IO) {
         runCatching {
             if (!isConfigured) {
                 error("YOUTUBE_API_KEY is not configured. Add it in the AI Studio Secrets panel.")
             }
             val encoded = Uri.encode(query.trim())
+            val regionParam = regionCode
+                ?.takeIf { it.isNotBlank() && !it.equals("ALL", ignoreCase = true) }
+                ?.let { "&regionCode=${it.uppercase()}" }
+                .orEmpty()
             val url = "https://www.googleapis.com/youtube/v3/search" +
-                "?part=snippet&type=video&videoCategoryId=10&maxResults=20" +
-                "&q=$encoded&key=$apiKey"
+                "?part=snippet&type=video&videoCategoryId=10&maxResults=25" +
+                "$regionParam&q=$encoded&key=$apiKey"
             val request = Request.Builder().url(url).build()
             client.newCall(request).execute().use { response ->
                 val raw = response.body?.string().orEmpty()
@@ -157,6 +201,144 @@ class YouTubeMusicClient {
                 }
             }
         }
+    }
+
+    suspend fun fetchPlaylist(playlistId: String): Result<Pair<String, List<YouTubeMusicTrack>>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val cleanId = playlistId.trim()
+                if (cleanId.isBlank()) error("Invalid YouTube playlist ID")
+
+                if (isConfigured) {
+                    val infoUrl = "https://www.googleapis.com/youtube/v3/playlists" +
+                        "?part=snippet&id=${Uri.encode(cleanId)}&key=$apiKey"
+                    val playlistTitle = client.newCall(Request.Builder().url(infoUrl).build()).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val raw = resp.body?.string().orEmpty()
+                            json.decodeFromString<YtPlaylistsInfoResponseDto>(raw)
+                                .items.firstOrNull()?.snippet?.title?.takeIf { it.isNotBlank() }
+                        } else null
+                    } ?: "YouTube Playlist"
+
+                    val itemsUrl = "https://www.googleapis.com/youtube/v3/playlistItems" +
+                        "?part=snippet&maxResults=50&playlistId=${Uri.encode(cleanId)}&key=$apiKey"
+                    val tracks = client.newCall(Request.Builder().url(itemsUrl).build()).execute().use { resp ->
+                        val raw = resp.body?.string().orEmpty()
+                        if (!resp.isSuccessful) error("Could not fetch YouTube playlist (${resp.code})")
+                        val parsed = json.decodeFromString<YtPlaylistItemsResponseDto>(raw)
+                        parsed.items.mapNotNull { item ->
+                            val videoId = item.snippet.resourceId.videoId?.takeIf { it.isNotBlank() }
+                                ?: return@mapNotNull null
+                            val thumb = item.snippet.thumbnails.high?.url
+                                ?: item.snippet.thumbnails.medium?.url
+                                ?: item.snippet.thumbnails.default?.url
+                                ?: "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                            val channel = item.snippet.videoOwnerChannelTitle
+                                ?: item.snippet.channelTitle.ifBlank { "YouTube Music" }
+                            YouTubeMusicTrack(
+                                videoId = videoId,
+                                title = decodeHtmlEntities(item.snippet.title),
+                                channelName = decodeHtmlEntities(channel),
+                                thumbnailUrl = thumb
+                            )
+                        }
+                    }
+                    decodeHtmlEntities(playlistTitle) to tracks
+                } else {
+                    // Public Atom XML playlist feed works for public playlists without an API key
+                    val feedUrl = "https://www.youtube.com/feeds/videos.xml?playlist_id=${Uri.encode(cleanId)}"
+                    val xml = client.newCall(Request.Builder().url(feedUrl).build()).execute().use { resp ->
+                        if (!resp.isSuccessful) error("Could not load public YouTube playlist (${resp.code})")
+                        resp.body?.string().orEmpty()
+                    }
+                    parseAtomPlaylistFeed(xml)
+                }
+            }
+        }
+
+    private fun parseAtomPlaylistFeed(xml: String): Pair<String, List<YouTubeMusicTrack>> {
+        val parser = Xml.newPullParser()
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+        parser.setInput(StringReader(xml))
+
+        var feedTitle = "YouTube Playlist"
+        val tracks = mutableListOf<YouTubeMusicTrack>()
+        var inEntry = false
+        var inAuthor = false
+        var currentVideoId: String? = null
+        var currentTitle: String? = null
+        var currentAuthor: String? = null
+        var currentThumb: String? = null
+        var currentTag: String? = null
+
+        var eventType = parser.eventType
+        while (eventType != XmlPullParser.END_DOCUMENT) {
+            when (eventType) {
+                XmlPullParser.START_TAG -> {
+                    currentTag = parser.name
+                    when (currentTag) {
+                        "entry" -> {
+                            inEntry = true
+                            currentVideoId = null
+                            currentTitle = null
+                            currentAuthor = null
+                            currentThumb = null
+                        }
+                        "author" -> if (inEntry) inAuthor = true
+                        "media:thumbnail" -> if (inEntry) {
+                            currentThumb = parser.getAttributeValue(null, "url")
+                        }
+                    }
+                }
+                XmlPullParser.TEXT -> {
+                    val text = parser.text?.trim().orEmpty()
+                    if (text.isNotEmpty()) {
+                        if (!inEntry && currentTag == "title") {
+                            feedTitle = text
+                        } else if (inEntry) {
+                            when (currentTag) {
+                                "yt:videoId" -> currentVideoId = text
+                                "title" -> if (!inAuthor) currentTitle = text
+                                "name" -> if (inAuthor) currentAuthor = text
+                            }
+                        }
+                    }
+                }
+                XmlPullParser.END_TAG -> {
+                    when (parser.name) {
+                        "author" -> inAuthor = false
+                        "entry" -> {
+                            val vid = currentVideoId
+                            val title = currentTitle
+                            if (!vid.isNullOrBlank() && !title.isNullOrBlank()) {
+                                tracks.add(
+                                    YouTubeMusicTrack(
+                                        videoId = vid,
+                                        title = decodeHtmlEntities(title),
+                                        channelName = decodeHtmlEntities(currentAuthor ?: "YouTube Music"),
+                                        thumbnailUrl = currentThumb ?: "https://img.youtube.com/vi/$vid/hqdefault.jpg"
+                                    )
+                                )
+                            }
+                            inEntry = false
+                        }
+                    }
+                    currentTag = null
+                }
+            }
+            eventType = parser.next()
+        }
+        return decodeHtmlEntities(feedTitle) to tracks
+    }
+
+    fun parseYouTubePlaylistId(input: String): String? {
+        val trimmed = input.trim()
+        if (trimmed.isBlank()) return null
+        val uri = runCatching { Uri.parse(trimmed) }.getOrNull()
+        val listParam = uri?.getQueryParameter("list")?.takeIf { it.isNotBlank() }
+        if (listParam != null) return listParam
+        if (trimmed.matches(Regex("^(PL|OLAK5uy_|UU|RD|LL)[a-zA-Z0-9_-]{8,}$"))) return trimmed
+        return null
     }
 
     fun parseYouTubeUrl(input: String): YouTubeMusicTrack? {
